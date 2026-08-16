@@ -1,1008 +1,1412 @@
-const express = require("express");
-const session = require("express-session");
-const path = require("path");
-const { parse } = require("csv-parse/sync");
+let rows = [];
+let selectedProgram = "All";
+let selectedMetric = "";
 
-const app = express();
-
-const PORT = process.env.PORT || 3000;
-
-const KR_CSV_URL =
-  process.env.KR_CSV_URL || "";
-
-const ACCESS_CSV_URL =
-  process.env.ACCESS_CSV_URL || "";
-
-const DASHBOARD_PASSWORD =
-  process.env.DASHBOARD_PASSWORD || "";
-
-const SESSION_SECRET =
-  process.env.SESSION_SECRET ||
-  "kr-pulse-development-secret";
-
-const REFRESH_MS = 5 * 60 * 1000;
+const $ = (selector) =>
+  document.querySelector(selector);
 
 /* =========================================================
-   APP SETUP
+   API
 ========================================================= */
 
-app.use(express.json({ limit: "100kb" }));
-
-app.use(
-  session({
-    secret: SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: false,
-      maxAge: 8 * 60 * 60 * 1000,
+async function api(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
     },
-  })
-);
-
-/*
- * IMPORTANT:
- * The frontend files MUST be inside /public.
- *
- * /public/index.html
- * /public/app.js
- * /public/styles.css
- */
-app.use(
-  express.static(
-    path.join(__dirname, "public")
-  )
-);
-
-/* =========================================================
-   CACHE
-========================================================= */
-
-let cache = {
-  metrics: [],
-  access: [],
-  fetchedAt: 0,
-};
-
-/* =========================================================
-   HELPERS
-========================================================= */
-
-function cleanKey(value) {
-  return String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[%()₹$]/g, "")
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
-
-function normText(value) {
-  return String(value ?? "").trim();
-}
-
-function num(value) {
-  if (
-    value === null ||
-    value === undefined
-  ) {
-    return null;
-  }
-
-  let text = String(value).trim();
-
-  if (!text) {
-    return null;
-  }
-
-  if (
-    /^n\/?a$/i.test(text) ||
-    /^na$/i.test(text) ||
-    /^-+$/.test(text)
-  ) {
-    return null;
-  }
-
-  text = text
-    .replace(/,/g, "")
-    .replace(/₹/g, "")
-    .trim();
-
-  /*
-   * Convert ranges such as:
-   * 4.7-4.8
-   * 80-90
-   * to their midpoint.
-   */
-
-  const range = text.match(
-    /(-?\d+(?:\.\d+)?)\s*(?:-|to|–|—)\s*(-?\d+(?:\.\d+)?)/i
-  );
-
-  if (range) {
-    return (
-      (Number(range[1]) +
-        Number(range[2])) /
-      2
-    );
-  }
-
-  const match = text.match(
-    /-?\d+(?:\.\d+)?/
-  );
-
-  return match
-    ? Number(match[0])
-    : null;
-}
-
-function isPercentLike(
-  header,
-  rawValue
-) {
-  return (
-    /%|percent|percentage|i2h|pay/i.test(
-      String(header ?? "")
-    ) ||
-    /%/.test(
-      String(rawValue ?? "")
-    )
-  );
-}
-
-function headersFromRows(rows) {
-  if (!rows.length) {
-    return [];
-  }
-
-  return Object.keys(rows[0]);
-}
-
-function findColumn(
-  headers,
-  patterns
-) {
-  const keyed =
-    headers.map((header) => ({
-      raw: header,
-      key: cleanKey(header),
-    }));
-
-  for (const pattern of patterns) {
-    const regex =
-      new RegExp(pattern, "i");
-
-    const found =
-      keyed.find((item) =>
-        regex.test(item.key)
-      );
-
-    if (found) {
-      return found.raw;
-    }
-  }
-
-  return null;
-}
-
-/* =========================================================
-   KR DATA — LONG FORMAT
-========================================================= */
-
-function inferLongRows(rows) {
-  if (!rows.length) {
-    return [];
-  }
-
-  const headers =
-    headersFromRows(rows);
-
-  const programCol =
-    findColumn(headers, [
-      "program",
-      "course",
-      "vertical",
-      "business_unit",
-      "stream",
-    ]);
-
-  const stakeholderCol =
-    findColumn(headers, [
-      "stakeholder",
-      "owner",
-      "instructor",
-      "person",
-      "module_owner",
-    ]);
-
-  const metricCol =
-    findColumn(headers, [
-      "^metric$",
-      "^kr$",
-      "kpi",
-      "key_result",
-      "measure",
-    ]);
-
-  const targetCol =
-    findColumn(headers, [
-      "^target$",
-      "target_value",
-      "^goal$",
-    ]);
-
-  const actualCol =
-    findColumn(headers, [
-      "^actual$",
-      "^current$",
-      "achieved",
-      "^value$",
-    ]);
-
-  const monthCol =
-    findColumn(headers, [
-      "^month$",
-      "period",
-      "date",
-      "timeline",
-    ]);
-
-  if (
-    !metricCol ||
-    !targetCol ||
-    !actualCol
-  ) {
-    return null;
-  }
-
-  return rows
-    .map((row, index) => ({
-      id: index,
-
-      program:
-        normText(
-          programCol
-            ? row[programCol]
-            : "All"
-        ),
-
-      stakeholder:
-        normText(
-          stakeholderCol
-            ? row[stakeholderCol]
-            : "Team"
-        ),
-
-      metric:
-        normText(
-          row[metricCol]
-        ),
-
-      target:
-        num(
-          row[targetCol]
-        ),
-
-      actual:
-        num(
-          row[actualCol]
-        ),
-
-      targetRaw:
-        normText(
-          row[targetCol]
-        ),
-
-      actualRaw:
-        normText(
-          row[actualCol]
-        ),
-
-      month:
-        normText(
-          monthCol
-            ? row[monthCol]
-            : ""
-        ),
-
-      unit:
-        isPercentLike(
-          metricCol,
-          row[metricCol]
-        ) ||
-        isPercentLike(
-          targetCol,
-          row[targetCol]
-        )
-          ? "%"
-          : "",
-    }))
-    .filter(
-      (row) =>
-        row.metric
-    );
-}
-
-/* =========================================================
-   KR DATA — WIDE FORMAT
-========================================================= */
-
-function inferWideRows(rows) {
-  if (!rows.length) {
-    return [];
-  }
-
-  const headers =
-    headersFromRows(rows);
-
-  const programCol =
-    findColumn(headers, [
-      "program",
-      "course",
-      "vertical",
-      "business_unit",
-      "stream",
-    ]);
-
-  const stakeholderCol =
-    findColumn(headers, [
-      "stakeholder",
-      "owner",
-      "instructor",
-      "person",
-      "module_owner",
-    ]);
-
-  const monthCol =
-    findColumn(headers, [
-      "^month$",
-      "period",
-      "date",
-      "timeline",
-    ]);
-
-  const metricPairs = [];
-
-  for (const header of headers) {
-    const key =
-      cleanKey(header);
-
-    if (
-      /target|goal/.test(key)
-    ) {
-      const base =
-        key.replace(
-          /_?target|_?goal/g,
-          ""
-        );
-
-      const actualCol =
-        headers.find(
-          (candidate) => {
-            const candidateKey =
-              cleanKey(
-                candidate
-              );
-
-            return (
-              candidateKey ===
-                `${base}_actual` ||
-              candidateKey ===
-                `${base}_current` ||
-              candidateKey ===
-                base
-            );
-          }
-        );
-
-      if (actualCol) {
-        metricPairs.push({
-          metric:
-            base
-              .replace(
-                /_/g,
-                " "
-              )
-              .trim(),
-
-          targetCol:
-            header,
-
-          actualCol:
-            actualCol,
-        });
-      }
-    }
-  }
-
-  if (!metricPairs.length) {
-    return [];
-  }
-
-  const output = [];
-
-  rows.forEach(
-    (row, index) => {
-      metricPairs.forEach(
-        (pair) => {
-          const metricName =
-            pair.metric.replace(
-              /\b\w/g,
-              (char) =>
-                char.toUpperCase()
-            );
-
-          output.push({
-            id:
-              `${index}-${metricName}`,
-
-            program:
-              normText(
-                programCol
-                  ? row[
-                      programCol
-                    ]
-                  : "All"
-              ),
-
-            stakeholder:
-              normText(
-                stakeholderCol
-                  ? row[
-                      stakeholderCol
-                    ]
-                  : "Team"
-              ),
-
-            metric:
-              metricName,
-
-            target:
-              num(
-                row[
-                  pair.targetCol
-                ]
-              ),
-
-            actual:
-              num(
-                row[
-                  pair.actualCol
-                ]
-              ),
-
-            targetRaw:
-              normText(
-                row[
-                  pair.targetCol
-                ]
-              ),
-
-            actualRaw:
-              normText(
-                row[
-                  pair.actualCol
-                ]
-              ),
-
-            month:
-              normText(
-                monthCol
-                  ? row[
-                      monthCol
-                    ]
-                  : ""
-              ),
-
-            unit:
-              isPercentLike(
-                metricName,
-                row[
-                  pair.targetCol
-                ]
-              )
-                ? "%"
-                : "",
-          });
-        }
-      );
-    }
-  );
-
-  return output;
-}
-
-/* =========================================================
-   NORMALIZE KR CSV
-========================================================= */
-
-function normalizeMetrics(
-  csvText
-) {
-  const rows =
-    parse(csvText, {
-      columns: true,
-      skip_empty_lines: true,
-      relax_column_count: true,
-      bom: true,
-      trim: true,
-    });
-
-  const longRows =
-    inferLongRows(rows);
-
-  if (longRows !== null) {
-    return longRows;
-  }
-
-  return inferWideRows(rows);
-}
-
-/* =========================================================
-   ACCESS CSV
-========================================================= */
-
-function normalizeAccess(
-  csvText
-) {
-  const rows =
-    parse(csvText, {
-      columns: true,
-      skip_empty_lines: true,
-      relax_column_count: true,
-      bom: true,
-      trim: true,
-    });
-
-  if (!rows.length) {
-    return [];
-  }
-
-  const headers =
-    headersFromRows(rows);
-
-  const userCol =
-    findColumn(headers, [
-      "username",
-      "user",
-      "login",
-      "email",
-    ]);
-
-  const passCol =
-    findColumn(headers, [
-      "password",
-      "pass",
-      "pwd",
-    ]);
-
-  const programCol =
-    findColumn(headers, [
-      "program",
-      "course",
-      "vertical",
-      "access",
-    ]);
-
-  if (
-    !userCol ||
-    !passCol
-  ) {
-    return [];
-  }
-
-  return rows
-    .map((row) => ({
-      username:
-        normText(
-          row[userCol]
-        ),
-
-      password:
-        normText(
-          row[passCol]
-        ),
-
-      program:
-        programCol
-          ? normText(
-              row[
-                programCol
-              ]
-            )
-          : "All",
-    }))
-    .filter(
-      (row) =>
-        row.username &&
-        row.password
-    );
-}
-
-/* =========================================================
-   GOOGLE SHEET FETCH
-========================================================= */
-
-async function fetchText(
-  url
-) {
-  if (!url) {
-    throw new Error(
-      "Google Sheet URL is not configured."
-    );
-  }
-
-  const response =
-    await fetch(url, {
-      redirect: "follow",
-    });
+  });
+
+  const data = await response
+    .json()
+    .catch(() => ({}));
 
   if (!response.ok) {
     throw new Error(
-      `Google Sheet fetch failed: ${response.status}`
+      data.error ||
+        `Request failed (${response.status})`
     );
   }
 
-  return response.text();
+  return data;
 }
 
 /* =========================================================
-   LOAD GOOGLE SHEET DATA
+   LOGIN / DASHBOARD VIEW
 ========================================================= */
 
-async function getData(
-  force = false
-) {
-  const cacheIsFresh =
-    cache.fetchedAt > 0 &&
-    Date.now() -
-        cache.fetchedAt <
-      REFRESH_MS;
+function showLogin() {
+  const loginView = $("#loginView");
+  const appView = $("#appView");
 
-  if (
-    !force &&
-    cacheIsFresh
-  ) {
-    return cache;
+  if (loginView) {
+    loginView.classList.remove("hidden");
   }
 
-  let metrics = [];
+  if (appView) {
+    appView.classList.add("hidden");
+  }
+}
 
-  /*
-   * KR data should never crash the server.
-   * If parsing fails, dashboard still loads.
-   */
+function showDashboard() {
+  const loginView = $("#loginView");
+  const appView = $("#appView");
 
+  if (loginView) {
+    loginView.classList.add("hidden");
+  }
+
+  if (appView) {
+    appView.classList.remove("hidden");
+  }
+}
+
+/* =========================================================
+   INITIAL LOAD
+========================================================= */
+
+async function boot() {
   try {
-    if (KR_CSV_URL) {
-      const krCsv =
-        await fetchText(
-          KR_CSV_URL
-        );
+    const result = await api(
+      "/api/me"
+    );
 
-      metrics =
-        normalizeMetrics(
-          krCsv
-        );
+    if (
+      result &&
+      result.user
+    ) {
+      showDashboard();
+
+      /*
+       * Metrics load independently.
+       * Login is already complete.
+       */
+      loadMetrics();
+    } else {
+      showLogin();
     }
   } catch (error) {
     console.error(
-      "KR CSV error:",
-      error.message
+      "Boot error:",
+      error
     );
 
-    metrics = [];
+    showLogin();
   }
-
-  let access = [];
-
-  try {
-    if (ACCESS_CSV_URL) {
-      const accessCsv =
-        await fetchText(
-          ACCESS_CSV_URL
-        );
-
-      access =
-        normalizeAccess(
-          accessCsv
-        );
-    }
-  } catch (error) {
-    console.warn(
-      "Access CSV error:",
-      error.message
-    );
-  }
-
-  cache = {
-    metrics,
-    access,
-    fetchedAt:
-      Date.now(),
-  };
-
-  return cache;
-}
-
-/* =========================================================
-   AUTH MIDDLEWARE
-========================================================= */
-
-function requireAuth(
-  req,
-  res,
-  next
-) {
-  if (
-    !req.session ||
-    !req.session.user
-  ) {
-    return res.status(401).json({
-      error:
-        "Unauthorized",
-    });
-  }
-
-  next();
 }
 
 /* =========================================================
    LOGIN
 ========================================================= */
 
-app.post(
-  "/api/login",
-  async (req, res) => {
-    try {
-      const {
-        username,
-        password,
-      } = req.body || {};
+const loginForm =
+  $("#loginForm");
 
-      if (
-        !username ||
-        !password
-      ) {
-        return res.status(400).json({
-          error:
-            "Username and password are required.",
-        });
+if (loginForm) {
+  loginForm.addEventListener(
+    "submit",
+    async (event) => {
+      event.preventDefault();
+
+      const username =
+        $("#username").value.trim();
+
+      const password =
+        $("#password").value;
+
+      const errorBox =
+        $("#loginError");
+
+      const button =
+        loginForm.querySelector(
+          "button[type='submit']"
+        );
+
+      errorBox.textContent = "";
+
+      if (!username || !password) {
+        errorBox.textContent =
+          "Please enter your username and password.";
+
+        return;
       }
 
-      /*
-       * Founder login for today's demo.
-       *
-       * Username:
-       * founder
-       *
-       * Password:
-       * Railway DASHBOARD_PASSWORD
-       */
-
-      if (
-        String(username)
-          .trim()
-          .toLowerCase() !==
-        "founder"
-      ) {
-        return res.status(401).json({
-          error:
-            "Invalid credentials.",
-        });
+      if (button) {
+        button.disabled = true;
+        button.textContent =
+          "Signing in…";
       }
 
-      if (
-        !DASHBOARD_PASSWORD
-      ) {
-        return res.status(500).json({
-          error:
-            "DASHBOARD_PASSWORD is not configured in Railway.",
-        });
+      try {
+        /*
+         * ONLY authenticate here.
+         */
+        const result =
+          await api(
+            "/api/login",
+            {
+              method: "POST",
+
+              body: JSON.stringify({
+                username,
+                password,
+              }),
+            }
+          );
+
+        console.log(
+          "Login successful:",
+          result
+        );
+
+        /*
+         * IMPORTANT:
+         * Show dashboard immediately.
+         */
+        showDashboard();
+
+        /*
+         * Then load Google Sheet data.
+         */
+        await loadMetrics();
+
+      } catch (error) {
+        console.error(
+          "Login failed:",
+          error
+        );
+
+        errorBox.textContent =
+          error.message ||
+          "Unable to sign in.";
+
+        showLogin();
+
+      } finally {
+        if (button) {
+          button.disabled = false;
+
+          button.innerHTML =
+            `Enter dashboard <span>→</span>`;
+        }
       }
-
-      if (
-        String(password) !==
-        String(
-          DASHBOARD_PASSWORD
-        )
-      ) {
-        return res.status(401).json({
-          error:
-            "Invalid credentials.",
-        });
-      }
-
-      /*
-       * Authenticate without
-       * touching Google Sheets.
-       */
-
-      req.session.user = {
-        username:
-          "founder",
-
-        program:
-          "All",
-      };
-
-      return res.json({
-        ok: true,
-
-        user:
-          req.session.user,
-      });
-    } catch (error) {
-      console.error(
-        "Login error:",
-        error
-      );
-
-      return res.status(500).json({
-        error:
-          "Login failed.",
-      });
     }
-  }
-);
+  );
+}
 
 /* =========================================================
    LOGOUT
 ========================================================= */
 
-app.post(
-  "/api/logout",
-  (req, res) => {
-    req.session.destroy(
-      () => {
-        res.json({
-          ok: true,
-        });
+const logoutButton =
+  $("#logoutBtn");
+
+if (logoutButton) {
+  logoutButton.addEventListener(
+    "click",
+    async () => {
+      try {
+        await api(
+          "/api/logout",
+          {
+            method: "POST",
+          }
+        );
+      } catch (error) {
+        console.error(
+          "Logout error:",
+          error
+        );
+      }
+
+      rows = [];
+      selectedProgram = "All";
+      selectedMetric = "";
+
+      showLogin();
+    }
+  );
+}
+
+/* =========================================================
+   LOAD METRICS
+========================================================= */
+
+async function loadMetrics(
+  forceRefresh = false
+) {
+  try {
+    if (forceRefresh) {
+      try {
+        await api(
+          "/api/refresh",
+          {
+            method: "POST",
+          }
+        );
+      } catch (error) {
+        console.warn(
+          "Manual refresh failed:",
+          error
+        );
+      }
+    }
+
+    const result =
+      await api(
+        "/api/metrics"
+      );
+
+    rows =
+      Array.isArray(
+        result.rows
+      )
+        ? result.rows
+        : [];
+
+    updateLastUpdated(
+      result.fetchedAt
+    );
+
+    buildPrograms();
+
+    render();
+
+  } catch (error) {
+    console.error(
+      "Metrics loading failed:",
+      error
+    );
+
+    /*
+     * IMPORTANT:
+     * Never send the user back
+     * to the login page.
+     */
+
+    showMetricsUnavailable(
+      error.message
+    );
+  }
+}
+
+/* =========================================================
+   REFRESH BUTTON
+========================================================= */
+
+const refreshButton =
+  $("#refreshBtn");
+
+if (refreshButton) {
+  refreshButton.addEventListener(
+    "click",
+    async () => {
+      refreshButton.disabled = true;
+      refreshButton.textContent =
+        "…";
+
+      try {
+        await loadMetrics(true);
+      } finally {
+        refreshButton.disabled = false;
+        refreshButton.textContent =
+          "↻";
+      }
+    }
+  );
+}
+
+/* =========================================================
+   DATA ERROR
+========================================================= */
+
+function showMetricsUnavailable(
+  message
+) {
+  const cards =
+    $("#cards");
+
+  if (!cards) {
+    return;
+  }
+
+  cards.innerHTML = `
+    <div class="metric-card bad">
+
+      <div class="metric-top">
+
+        <div>
+
+          <div class="metric-name">
+            Dashboard connected
+          </div>
+
+          <div class="metric-owner">
+            Google Sheet data is currently unavailable
+          </div>
+
+        </div>
+
+        <div class="status bad">
+          DATA PENDING
+        </div>
+
+      </div>
+
+      <div
+        style="
+          margin-top:20px;
+          color:#8b98a8;
+          line-height:1.6;
+          font-size:13px;
+        "
+      >
+        ${escapeHtml(
+          message ||
+            "The dashboard could not read the Google Sheet yet."
+        )}
+      </div>
+
+      <div style="margin-top:18px;">
+
+        <button
+          id="retryMetricsBtn"
+          class="ghost-btn"
+          type="button"
+        >
+          Retry
+        </button>
+
+      </div>
+
+    </div>
+  `;
+
+  const retry =
+    $("#retryMetricsBtn");
+
+  if (retry) {
+    retry.addEventListener(
+      "click",
+      () => loadMetrics(true)
+    );
+  }
+
+  $("#overallScore").textContent =
+    "—";
+
+  $("#onTrack").textContent =
+    "—";
+
+  $("#atRisk").textContent =
+    "—";
+
+  $("#metricCount").textContent =
+    "—";
+
+  $("#syncAge").textContent =
+    "Pending";
+
+  $("#metricSelect").innerHTML =
+    `<option>No metric data</option>`;
+
+  $("#chart").innerHTML = `
+    <text
+      x="50%"
+      y="50%"
+      text-anchor="middle"
+      fill="#5d6a79"
+      font-size="14"
+    >
+      Waiting for Google Sheets data
+    </text>
+  `;
+
+  $("#chartLabels").innerHTML =
+    "";
+}
+
+/* =========================================================
+   LAST UPDATED
+========================================================= */
+
+function updateLastUpdated(
+  timestamp
+) {
+  if (!timestamp) {
+    $("#lastUpdated").textContent =
+      "Waiting for data";
+
+    $("#syncAge").textContent =
+      "Pending";
+
+    return;
+  }
+
+  const date =
+    new Date(timestamp);
+
+  $("#lastUpdated").textContent =
+    `Updated ${date.toLocaleTimeString(
+      [],
+      {
+        hour: "2-digit",
+        minute: "2-digit",
+      }
+    )}`;
+
+  const minutesAgo =
+    Math.max(
+      0,
+      Math.round(
+        (Date.now() -
+          timestamp) /
+          60000
+      )
+    );
+
+  $("#syncAge").textContent =
+    minutesAgo <= 0
+      ? "just now"
+      : `${minutesAgo}m ago`;
+}
+
+/* =========================================================
+   PROGRAMS
+========================================================= */
+
+function buildPrograms() {
+  const programs = [
+    ...new Set(
+      rows
+        .map(
+          (row) =>
+            row.program
+        )
+        .filter(Boolean)
+        .map(
+          (program) =>
+            String(
+              program
+            ).trim()
+        )
+    ),
+  ].filter(
+    (program) =>
+      program
+        .toLowerCase() !==
+      "all"
+  );
+
+  const container =
+    $("#programTabs");
+
+  if (!container) {
+    return;
+  }
+
+  container.innerHTML = "";
+
+  programs.forEach(
+    (program) => {
+      const button =
+        document.createElement(
+          "button"
+        );
+
+      button.type =
+        "button";
+
+      button.className =
+        "program-tab" +
+        (
+          selectedProgram ===
+          program
+            ? " active"
+            : ""
+        );
+
+      button.dataset.program =
+        program;
+
+      button.textContent =
+        program;
+
+      button.addEventListener(
+        "click",
+        () => {
+          selectedProgram =
+            program;
+
+          render();
+        }
+      );
+
+      container.appendChild(
+        button
+      );
+    }
+  );
+
+  const allButton =
+    document.querySelector(
+      ".program-tab[data-program='All']"
+    );
+
+  if (allButton) {
+    allButton.onclick = () => {
+      selectedProgram =
+        "All";
+
+      render();
+    };
+  }
+}
+
+/* =========================================================
+   FILTER
+========================================================= */
+
+function filteredRows() {
+  if (
+    selectedProgram ===
+    "All"
+  ) {
+    return rows;
+  }
+
+  return rows.filter(
+    (row) =>
+      String(
+        row.program || ""
+      )
+        .toLowerCase() ===
+      selectedProgram
+        .toLowerCase()
+  );
+}
+
+/* =========================================================
+   LATEST VALUES
+========================================================= */
+
+function groupLatest(
+  items
+) {
+  const grouped =
+    new Map();
+
+  items.forEach(
+    (row) => {
+      const key =
+        `${row.metric}|||${row.stakeholder}`;
+
+      const existing =
+        grouped.get(key);
+
+      if (!existing) {
+        grouped.set(
+          key,
+          row
+        );
+
+        return;
+      }
+
+      const currentMonth =
+        String(
+          row.month || ""
+        );
+
+      const existingMonth =
+        String(
+          existing.month ||
+            ""
+        );
+
+      if (
+        currentMonth >=
+        existingMonth
+      ) {
+        grouped.set(
+          key,
+          row
+        );
+      }
+    }
+  );
+
+  return [
+    ...grouped.values(),
+  ];
+}
+
+function metricRows() {
+  return groupLatest(
+    filteredRows()
+  );
+}
+
+/* =========================================================
+   TARGET RATIO
+========================================================= */
+
+function ratio(row) {
+  if (
+    row.target === null ||
+    row.target ===
+      undefined ||
+    row.actual === null ||
+    row.actual ===
+      undefined ||
+    Number(row.target) ===
+      0
+  ) {
+    return null;
+  }
+
+  return (
+    Number(row.actual) /
+    Number(row.target)
+  );
+}
+
+/* =========================================================
+   RENDER
+========================================================= */
+
+function render() {
+  const latestRows =
+    metricRows();
+
+  renderSummary(
+    latestRows
+  );
+
+  renderCards(
+    latestRows
+  );
+
+  renderTrendOptions(
+    latestRows
+  );
+
+  renderTrend();
+
+  document
+    .querySelectorAll(
+      ".program-tab"
+    )
+    .forEach(
+      (button) => {
+        button.classList.toggle(
+          "active",
+          button.dataset
+            .program ===
+            selectedProgram
+        );
       }
     );
-  }
-);
+
+  $("#sectionTitle").textContent =
+    selectedProgram ===
+    "All"
+      ? "All programs"
+      : selectedProgram;
+}
 
 /* =========================================================
-   CURRENT USER
+   SUMMARY
 ========================================================= */
 
-app.get(
-  "/api/me",
-  (req, res) => {
-    res.json({
-      user:
-        req.session &&
-        req.session.user
-          ? req.session.user
-          : null,
-    });
-  }
-);
+function renderSummary(
+  latestRows
+) {
+  const validRows =
+    latestRows.filter(
+      (row) =>
+        ratio(row) !==
+        null
+    );
+
+  const onTrack =
+    validRows.filter(
+      (row) =>
+        ratio(row) >=
+        1
+    ).length;
+
+  const atRisk =
+    validRows.length -
+    onTrack;
+
+  const average =
+    validRows.length
+      ? validRows.reduce(
+          (sum, row) =>
+            sum +
+            Math.min(
+              ratio(row),
+              1.25
+            ),
+          0
+        ) /
+        validRows.length
+      : null;
+
+  $("#onTrack").textContent =
+    onTrack;
+
+  $("#atRisk").textContent =
+    atRisk;
+
+  $("#metricCount").textContent =
+    latestRows.length;
+
+  $("#overallScore").textContent =
+    average === null
+      ? "—"
+      : `${Math.round(
+          average * 100
+        )}%`;
+}
 
 /* =========================================================
-   METRICS
+   CARDS
 ========================================================= */
 
-app.get(
-  "/api/metrics",
-  requireAuth,
-  async (req, res) => {
-    try {
-      const data =
-        await getData(false);
+function renderCards(
+  latestRows
+) {
+  const container =
+    $("#cards");
 
-      return res.json({
-        rows:
-          data.metrics || [],
+  container.innerHTML =
+    "";
 
-        fetchedAt:
-          data.fetchedAt,
+  if (!latestRows.length) {
+    container.innerHTML = `
+      <div class="metric-card">
 
-        refreshEveryMs:
-          REFRESH_MS,
+        <div class="metric-name">
+          No metrics available yet
+        </div>
 
-        user:
-          req.session.user,
-      });
-    } catch (error) {
-      console.error(
-        "Metrics error:",
-        error
+        <div
+          class="muted"
+          style="margin-top:12px;"
+        >
+          Your dashboard is connected.
+          Waiting for readable KR data.
+        </div>
+
+      </div>
+    `;
+
+    return;
+  }
+
+  latestRows.forEach(
+    (row) => {
+      const percentage =
+        ratio(row);
+
+      const isGood =
+        percentage !==
+          null &&
+        percentage >=
+          1;
+
+      const progressWidth =
+        percentage ===
+          null
+          ? 0
+          : Math.min(
+              Math.max(
+                percentage *
+                  100,
+                0
+              ),
+              100
+            );
+
+      const actual =
+        row.actualRaw !==
+          undefined &&
+        row.actualRaw !==
+          ""
+          ? row.actualRaw
+          : row.actual;
+
+      const target =
+        row.targetRaw !==
+          undefined &&
+        row.targetRaw !==
+          ""
+          ? row.targetRaw
+          : row.target;
+
+      const card =
+        document.createElement(
+          "div"
+        );
+
+      card.className =
+        `metric-card ${
+          isGood
+            ? "good"
+            : "bad"
+        }`;
+
+      card.innerHTML = `
+        <div class="metric-top">
+
+          <div>
+
+            <div class="metric-name">
+              ${escapeHtml(
+                row.metric
+              )}
+            </div>
+
+            <div class="metric-owner">
+              ${escapeHtml(
+                row.stakeholder ||
+                  "Team"
+              )}
+            </div>
+
+          </div>
+
+          <div
+            class="status ${
+              isGood
+                ? "good"
+                : "bad"
+            }"
+          >
+            ${
+              isGood
+                ? "ON TRACK"
+                : "AT RISK"
+            }
+          </div>
+
+        </div>
+
+        <div class="metric-value">
+
+          <span class="actual">
+            ${escapeHtml(
+              String(
+                actual
+              )
+            )}
+            ${row.unit || ""}
+          </span>
+
+          <span class="target">
+            /
+            ${escapeHtml(
+              String(
+                target
+              )
+            )}
+            ${row.unit || ""}
+          </span>
+
+        </div>
+
+        <div class="bar">
+
+          <div
+            class="bar-fill"
+            style="width:${progressWidth}%"
+          ></div>
+
+        </div>
+
+        <div class="meta-row">
+
+          <span>
+            ${
+              percentage ===
+              null
+                ? "No comparison"
+                : `${Math.round(
+                    percentage *
+                      100
+                  )}% of target`
+            }
+          </span>
+
+          <span>
+            ${
+              row.month
+                ? escapeHtml(
+                    row.month
+                  )
+                : "Latest"
+            }
+          </span>
+
+        </div>
+      `;
+
+      container.appendChild(
+        card
+      );
+    }
+  );
+}
+
+/* =========================================================
+   TREND SELECT
+========================================================= */
+
+const metricSelect =
+  $("#metricSelect");
+
+if (metricSelect) {
+  metricSelect.addEventListener(
+    "change",
+    (event) => {
+      selectedMetric =
+        event.target.value;
+
+      renderTrend();
+    }
+  );
+}
+
+function renderTrendOptions(
+  latestRows
+) {
+  const metrics = [
+    ...new Set(
+      latestRows
+        .map(
+          (row) =>
+            row.metric
+        )
+        .filter(Boolean)
+    ),
+  ];
+
+  const select =
+    $("#metricSelect");
+
+  if (!select) {
+    return;
+  }
+
+  if (
+    !metrics.includes(
+      selectedMetric
+    )
+  ) {
+    selectedMetric =
+      metrics[0] || "";
+  }
+
+  select.innerHTML =
+    metrics
+      .map(
+        (metric) =>
+          `
+            <option
+              value="${escapeAttr(
+                metric
+              )}"
+            >
+              ${escapeHtml(
+                metric
+              )}
+            </option>
+          `
+      )
+      .join("");
+
+  if (selectedMetric) {
+    select.value =
+      selectedMetric;
+  }
+}
+
+/* =========================================================
+   TREND DATA
+========================================================= */
+
+function trendData() {
+  let sourceRows =
+    rows;
+
+  if (
+    selectedProgram !==
+    "All"
+  ) {
+    sourceRows =
+      rows.filter(
+        (row) =>
+          String(
+            row.program ||
+              ""
+          )
+            .toLowerCase() ===
+          selectedProgram
+            .toLowerCase()
+      );
+  }
+
+  const matchingRows =
+    sourceRows.filter(
+      (row) =>
+        row.metric ===
+          selectedMetric &&
+        row.actual !==
+          null &&
+        row.actual !==
+          undefined
+    );
+
+  const byMonth =
+    new Map();
+
+  matchingRows.forEach(
+    (row) => {
+      const month =
+        row.month ||
+        "Current";
+
+      if (
+        !byMonth.has(
+          month
+        )
+      ) {
+        byMonth.set(
+          month,
+          row
+        );
+      }
+    }
+  );
+
+  return [
+    ...byMonth.entries(),
+  ].map(
+    ([label, row]) => ({
+      label,
+      value:
+        row.actual,
+      target:
+        row.target,
+    })
+  );
+}
+
+/* =========================================================
+   CHART
+========================================================= */
+
+function renderTrend() {
+  const data =
+    trendData();
+
+  const svg =
+    $("#chart");
+
+  if (!svg) {
+    return;
+  }
+
+  if (!data.length) {
+    svg.innerHTML = `
+      <text
+        x="50%"
+        y="50%"
+        text-anchor="middle"
+        fill="#5d6a79"
+        font-size="14"
+      >
+        No monthly data available
+      </text>
+    `;
+
+    $("#chartLabels").innerHTML =
+      "";
+
+    return;
+  }
+
+  const width = 1000;
+  const height = 360;
+
+  const left = 28;
+  const right = 20;
+  const top = 28;
+  const bottom = 36;
+
+  const values =
+    data
+      .map(
+        (item) =>
+          Number(
+            item.value
+          )
+      )
+      .filter(
+        (value) =>
+          !Number.isNaN(
+            value
+          )
       );
 
-      return res.status(500).json({
-        error:
-          "Could not fetch metrics.",
-      });
-    }
+  const target =
+    data.find(
+      (item) =>
+        item.target !==
+          null &&
+        item.target !==
+          undefined
+    )?.target;
+
+  const allValues =
+    target !== undefined
+      ? [
+          ...values,
+          Number(target),
+        ]
+      : values;
+
+  let min =
+    Math.min(
+      ...allValues
+    );
+
+  let max =
+    Math.max(
+      ...allValues
+    );
+
+  if (min === max) {
+    min -= 1;
+    max += 1;
   }
-);
 
-/* =========================================================
-   FORCE REFRESH
-========================================================= */
-
-app.post(
-  "/api/refresh",
-  requireAuth,
-  async (req, res) => {
-    try {
-      const data =
-        await getData(true);
-
-      return res.json({
-        ok: true,
-
-        count:
-          data.metrics.length,
-
-        fetchedAt:
-          data.fetchedAt,
-      });
-    } catch (error) {
-      console.error(
-        "Refresh error:",
-        error
+  const x = (index) =>
+    left +
+    (width -
+      left -
+      right) *
+      (
+        index /
+        Math.max(
+          1,
+          data.length - 1
+        )
       );
 
-      return res.status(500).json({
-        error:
-          error.message,
-      });
+  const y = (value) =>
+    top +
+    (height -
+      top -
+      bottom) *
+      (
+        1 -
+        (value - min) /
+          (max - min)
+      );
+
+  let path = "";
+
+  data.forEach(
+    (item, index) => {
+      path +=
+        index === 0
+          ? "M "
+          : " L ";
+
+      path +=
+        `${x(index).toFixed(
+          1
+        )} ` +
+        `${y(
+          Number(
+            item.value
+          )
+        ).toFixed(1)}`;
     }
+  );
+
+  const points =
+    data
+      .map(
+        (item, index) => `
+          <circle
+            cx="${x(index)}"
+            cy="${y(
+              Number(
+                item.value
+              )
+            )}"
+            r="4.5"
+            fill="#0b1017"
+            stroke="#a89cff"
+            stroke-width="3"
+          />
+        `
+      )
+      .join("");
+
+  let targetLine = "";
+
+  if (
+    target !== undefined &&
+    target !== null
+  ) {
+    const targetY =
+      y(Number(target));
+
+    targetLine = `
+      <line
+        x1="${left}"
+        x2="${width - right}"
+        y1="${targetY}"
+        y2="${targetY}"
+        stroke="#607080"
+        stroke-dasharray="5 7"
+      />
+
+      <text
+        x="${width - right}"
+        y="${targetY - 8}"
+        text-anchor="end"
+        fill="#708090"
+        font-size="11"
+      >
+        Target ${escapeHtml(
+          String(target)
+        )}
+      </text>
+    `;
   }
-);
+
+  svg.innerHTML = `
+    <line
+      x1="${left}"
+      x2="${width - right}"
+      y1="${top}"
+      y2="${top}"
+      stroke="#18212c"
+    />
+
+    <line
+      x1="${left}"
+      x2="${width - right}"
+      y1="${height / 2}"
+      y2="${height / 2}"
+      stroke="#18212c"
+    />
+
+    <line
+      x1="${left}"
+      x2="${width - right}"
+      y1="${height - bottom}"
+      y2="${height - bottom}"
+      stroke="#18212c"
+    />
+
+    ${targetLine}
+
+    <path
+      d="${path}"
+      fill="none"
+      stroke="#a89cff"
+      stroke-width="4"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+
+    ${points}
+  `;
+
+  $("#chartLabels").innerHTML =
+    data
+      .map(
+        (item) =>
+          `<span>
+            ${escapeHtml(
+              String(
+                item.label
+              ).slice(
+                0,
+                12
+              )
+            )}
+          </span>`
+      )
+      .join("");
+}
 
 /* =========================================================
-   HEALTH CHECK
+   ESCAPE HTML
 ========================================================= */
 
-app.get(
-  "/health",
-  (req, res) => {
-    res.json({
-      status: "ok",
+function escapeHtml(
+  value
+) {
+  return String(
+    value
+  ).replace(
+    /[&<>"']/g,
+    (character) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    })[
+      character
+    ]
+  );
+}
 
-      service:
-        "KR Pulse",
-
-      timestamp:
-        new Date().toISOString(),
-    });
-  }
-);
+function escapeAttr(
+  value
+) {
+  return escapeHtml(
+    value
+  ).replace(
+    /`/g,
+    "&#96;"
+  );
+}
 
 /* =========================================================
-   SERVER START
+   AUTOMATIC REFRESH
 ========================================================= */
 
-app.listen(
-  PORT,
-  "0.0.0.0",
+setInterval(
   () => {
-    console.log(
-      `KR Pulse running on port ${PORT}`
-    );
+    const appView =
+      $("#appView");
 
-    console.log(
-      `KR CSV configured: ${Boolean(
-        KR_CSV_URL
-      )}`
-    );
-
-    console.log(
-      `Access CSV configured: ${Boolean(
-        ACCESS_CSV_URL
-      )}`
-    );
-
-    console.log(
-      `Dashboard password configured: ${Boolean(
-        DASHBOARD_PASSWORD
-      )}`
-    );
-  }
+    if (
+      appView &&
+      !appView.classList.contains(
+        "hidden"
+      )
+    ) {
+      loadMetrics();
+    }
+  },
+  5 * 60 * 1000
 );
+
+/* =========================================================
+   START
+========================================================= */
+
+boot();
