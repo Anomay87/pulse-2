@@ -1,52 +1,21 @@
 const express = require("express");
-const session = require("express-session");
 const path = require("path");
 
 const app = express();
 
 const PORT = process.env.PORT || 3000;
 
-const KR_CSV_URL = process.env.KR_CSV_URL || "";
-const ACCESS_CSV_URL = process.env.ACCESS_CSV_URL || "";
-const DASHBOARD_PASSWORD =
-  process.env.DASHBOARD_PASSWORD || "";
-
-const SESSION_SECRET =
-  process.env.SESSION_SECRET ||
-  "kr-pulse-session-secret";
+const KR_CSV_URL =
+  process.env.KR_CSV_URL || "";
 
 const REFRESH_MS = 5 * 60 * 1000;
 
-/* =========================================================
-   APP CONFIG
-========================================================= */
-
 app.use(express.json());
 
-app.use(
-  session({
-    secret: SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: false,
-      maxAge: 8 * 60 * 60 * 1000
-    }
-  })
-);
+/* =========================================================
+   SERVE FRONTEND
+========================================================= */
 
-/*
- * FRONTEND FILES
- *
- * These must exist here:
- *
- * public/
- *   index.html
- *   app.js
- *   styles.css
- */
 app.use(
   express.static(
     path.join(__dirname, "public")
@@ -54,33 +23,11 @@ app.use(
 );
 
 /* =========================================================
-   DATA CACHE
+   CACHE
 ========================================================= */
 
 let cachedMetrics = [];
 let lastFetchedAt = 0;
-
-/* =========================================================
-   GOOGLE SHEET FETCH
-========================================================= */
-
-async function fetchGoogleSheet(url) {
-  if (!url) {
-    throw new Error(
-      "Google Sheet URL is not configured."
-    );
-  }
-
-  const response = await fetch(url);
-
-  if (!response.ok) {
-    throw new Error(
-      `Google Sheet returned HTTP ${response.status}`
-    );
-  }
-
-  return await response.text();
-}
 
 /* =========================================================
    CSV PARSER
@@ -89,7 +36,10 @@ async function fetchGoogleSheet(url) {
 function parseCSV(text) {
   const lines = text
     .split(/\r?\n/)
-    .filter((line) => line.trim() !== "");
+    .filter(
+      (line) =>
+        line.trim() !== ""
+    );
 
   if (!lines.length) {
     return [];
@@ -98,19 +48,25 @@ function parseCSV(text) {
   const headers =
     lines[0]
       .split(",")
-      .map((header) =>
-        header.trim()
+      .map((value) =>
+        value
+          .trim()
           .replace(/^"|"$/g, "")
       );
 
   const rows = [];
 
-  for (let i = 1; i < lines.length; i++) {
+  for (
+    let i = 1;
+    i < lines.length;
+    i++
+  ) {
     const values =
       lines[i]
         .split(",")
         .map((value) =>
-          value.trim()
+          value
+            .trim()
             .replace(/^"|"$/g, "")
         );
 
@@ -130,10 +86,10 @@ function parseCSV(text) {
 }
 
 /* =========================================================
-   BASIC NUMBER PARSER
+   HELPERS
 ========================================================= */
 
-function parseNumber(value) {
+function number(value) {
   if (
     value === null ||
     value === undefined
@@ -147,24 +103,40 @@ function parseNumber(value) {
       .replace(/,/g, "")
       .replace(/%/g, "");
 
-  if (!text) {
-    return null;
-  }
-
   const match =
     text.match(
-      /-?\d+(\.\d+)?/
+      /-?\d+(?:\.\d+)?/
     );
 
-  if (!match) {
-    return null;
-  }
+  return match
+    ? Number(match[0])
+    : null;
+}
 
-  return Number(match[0]);
+function findColumn(
+  headers,
+  names
+) {
+  return headers.find(
+    (header) => {
+      const key =
+        header
+          .toLowerCase()
+          .replace(
+            /[^a-z0-9]/g,
+            ""
+          );
+
+      return names.some(
+        (name) =>
+          key.includes(name)
+      );
+    }
+  );
 }
 
 /* =========================================================
-   NORMALIZE KR DATA
+   NORMALIZE DATA
 ========================================================= */
 
 function normalizeMetrics(rows) {
@@ -175,38 +147,15 @@ function normalizeMetrics(rows) {
   const headers =
     Object.keys(rows[0]);
 
-  const findHeader = (
-    possibleNames
-  ) => {
-    return headers.find(
-      (header) => {
-        const normalized =
-          header
-            .toLowerCase()
-            .replace(
-              /[^a-z0-9]/g,
-              ""
-            );
-
-        return possibleNames.some(
-          (name) =>
-            normalized.includes(
-              name
-            )
-        );
-      }
-    );
-  };
-
   const programColumn =
-    findHeader([
+    findColumn(headers, [
       "program",
       "course",
       "vertical"
     ]);
 
   const metricColumn =
-    findHeader([
+    findColumn(headers, [
       "metric",
       "kr",
       "kpi",
@@ -214,13 +163,13 @@ function normalizeMetrics(rows) {
     ]);
 
   const targetColumn =
-    findHeader([
+    findColumn(headers, [
       "target",
       "goal"
     ]);
 
   const actualColumn =
-    findHeader([
+    findColumn(headers, [
       "actual",
       "current",
       "achieved",
@@ -228,87 +177,111 @@ function normalizeMetrics(rows) {
     ]);
 
   const stakeholderColumn =
-    findHeader([
+    findColumn(headers, [
       "stakeholder",
       "owner",
       "instructor"
     ]);
 
   const monthColumn =
-    findHeader([
+    findColumn(headers, [
       "month",
       "period",
       "date"
     ]);
 
   /*
-   * If the sheet doesn't have the expected
-   * long-format columns, return the raw
-   * rows rather than crashing the app.
+   * Expected format:
+   *
+   * Program
+   * Stakeholder
+   * Metric
+   * Target
+   * Actual
+   * Month
    */
+
   if (
     !metricColumn ||
     !targetColumn ||
     !actualColumn
   ) {
     console.log(
-      "KR sheet uses a different structure."
+      "Could not identify metric/target/actual columns."
+    );
+
+    console.log(
+      "Available columns:",
+      headers
     );
 
     return [];
   }
 
   return rows
-    .map((row, index) => ({
-      id: index,
+    .map(
+      (row, index) => ({
+        id: index,
 
-      program:
-        programColumn
-          ? String(
-              row[programColumn] ||
-                "All"
-            ).trim()
-          : "All",
+        program:
+          programColumn
+            ? String(
+                row[
+                  programColumn
+                ] || "All"
+              ).trim()
+            : "All",
 
-      stakeholder:
-        stakeholderColumn
-          ? String(
-              row[
-                stakeholderColumn
-              ] || "Team"
-            ).trim()
-          : "Team",
+        stakeholder:
+          stakeholderColumn
+            ? String(
+                row[
+                  stakeholderColumn
+                ] || "Team"
+              ).trim()
+            : "Team",
 
-      metric:
-        String(
-          row[metricColumn] ||
-            ""
-        ).trim(),
+        metric:
+          String(
+            row[
+              metricColumn
+            ] || ""
+          ).trim(),
 
-      target:
-        parseNumber(
-          row[targetColumn]
-        ),
+        target:
+          number(
+            row[
+              targetColumn
+            ]
+          ),
 
-      actual:
-        parseNumber(
-          row[actualColumn]
-        ),
+        actual:
+          number(
+            row[
+              actualColumn
+            ]
+          ),
 
-      targetRaw:
-        row[targetColumn] || "",
+        targetRaw:
+          row[
+            targetColumn
+          ] || "",
 
-      actualRaw:
-        row[actualColumn] || "",
+        actualRaw:
+          row[
+            actualColumn
+          ] || "",
 
-      month:
-        monthColumn
-          ? String(
-              row[monthColumn] ||
-                ""
-            ).trim()
-          : ""
-    }))
+        month:
+          monthColumn
+            ? String(
+                row[
+                  monthColumn
+                ] || ""
+              ).trim()
+            : ""
+      })
+    )
     .filter(
       (row) =>
         row.metric
@@ -316,7 +289,7 @@ function normalizeMetrics(rows) {
 }
 
 /* =========================================================
-   LOAD METRICS
+   GOOGLE SHEET
 ========================================================= */
 
 async function loadMetrics(
@@ -335,14 +308,35 @@ async function loadMetrics(
     return cachedMetrics;
   }
 
+  if (!KR_CSV_URL) {
+    console.error(
+      "KR_CSV_URL is missing."
+    );
+
+    return cachedMetrics;
+  }
+
   try {
-    const csv =
-      await fetchGoogleSheet(
+    const response =
+      await fetch(
         KR_CSV_URL
       );
 
+    if (!response.ok) {
+      throw new Error(
+        `Google Sheets returned ${response.status}`
+      );
+    }
+
+    const csv =
+      await response.text();
+
     const rawRows =
       parseCSV(csv);
+
+    console.log(
+      `Google Sheet rows: ${rawRows.length}`
+    );
 
     cachedMetrics =
       normalizeMetrics(
@@ -353,168 +347,25 @@ async function loadMetrics(
       Date.now();
 
     console.log(
-      `Loaded ${cachedMetrics.length} metrics`
+      `Normalized metrics: ${cachedMetrics.length}`
     );
-
-    return cachedMetrics;
 
   } catch (error) {
     console.error(
-      "Failed to load KR data:",
+      "Google Sheet error:",
       error.message
     );
-
-    /*
-     * Don't crash the server.
-     */
-    return cachedMetrics;
   }
+
+  return cachedMetrics;
 }
 
 /* =========================================================
-   AUTH MIDDLEWARE
-========================================================= */
-
-function requireAuth(
-  req,
-  res,
-  next
-) {
-  if (
-    req.session &&
-    req.session.user
-  ) {
-    return next();
-  }
-
-  return res.status(401).json({
-    error:
-      "Unauthorized"
-  });
-}
-
-/* =========================================================
-   LOGIN
-========================================================= */
-
-app.post(
-  "/api/login",
-  (req, res) => {
-    const {
-      username,
-      password
-    } = req.body || {};
-
-    if (
-      !username ||
-      !password
-    ) {
-      return res.status(400).json({
-        error:
-          "Username and password are required."
-      });
-    }
-
-    /*
-     * Founder login.
-     *
-     * USERNAME:
-     * founder
-     *
-     * PASSWORD:
-     * DASHBOARD_PASSWORD
-     * Railway variable
-     */
-
-    if (
-      String(username)
-        .trim()
-        .toLowerCase() !==
-      "founder"
-    ) {
-      return res.status(401).json({
-        error:
-          "Invalid credentials."
-      });
-    }
-
-    if (
-      !DASHBOARD_PASSWORD
-    ) {
-      return res.status(500).json({
-        error:
-          "DASHBOARD_PASSWORD is missing in Railway."
-      });
-    }
-
-    if (
-      String(password).trim() !==
-      String(
-        DASHBOARD_PASSWORD
-      ).trim()
-    ) {
-      return res.status(401).json({
-        error:
-          "Invalid credentials."
-      });
-    }
-
-    /*
-     * Login successful.
-     */
-    req.session.user = {
-      username: "founder",
-      program: "All"
-    };
-
-    return res.json({
-      ok: true,
-      user: req.session.user
-    });
-  }
-);
-
-/* =========================================================
-   CURRENT USER
-========================================================= */
-
-app.get(
-  "/api/me",
-  (req, res) => {
-    res.json({
-      user:
-        req.session &&
-        req.session.user
-          ? req.session.user
-          : null
-    });
-  }
-);
-
-/* =========================================================
-   LOGOUT
-========================================================= */
-
-app.post(
-  "/api/logout",
-  (req, res) => {
-    req.session.destroy(
-      () => {
-        res.json({
-          ok: true
-        });
-      }
-    );
-  }
-);
-
-/* =========================================================
-   METRICS API
+   PUBLIC METRICS API
 ========================================================= */
 
 app.get(
   "/api/metrics",
-  requireAuth,
   async (req, res) => {
     const metrics =
       await loadMetrics();
@@ -526,21 +377,17 @@ app.get(
         lastFetchedAt,
 
       refreshEveryMs:
-        REFRESH_MS,
-
-      user:
-        req.session.user
+        REFRESH_MS
     });
   }
 );
 
 /* =========================================================
-   FORCE REFRESH
+   MANUAL REFRESH
 ========================================================= */
 
 app.post(
   "/api/refresh",
-  requireAuth,
   async (req, res) => {
     const metrics =
       await loadMetrics(
@@ -560,7 +407,7 @@ app.post(
 );
 
 /* =========================================================
-   HEALTH CHECK
+   HEALTH
 ========================================================= */
 
 app.get(
@@ -568,16 +415,18 @@ app.get(
   (req, res) => {
     res.json({
       status: "ok",
+
       service:
         "KR Pulse",
-      timestamp:
+
+      time:
         new Date().toISOString()
     });
   }
 );
 
 /* =========================================================
-   FALLBACK
+   FRONTEND FALLBACK
 ========================================================= */
 
 app.get(
@@ -594,7 +443,7 @@ app.get(
 );
 
 /* =========================================================
-   START SERVER
+   START
 ========================================================= */
 
 app.listen(
@@ -608,18 +457,6 @@ app.listen(
     console.log(
       `KR CSV configured: ${Boolean(
         KR_CSV_URL
-      )}`
-    );
-
-    console.log(
-      `Access CSV configured: ${Boolean(
-        ACCESS_CSV_URL
-      )}`
-    );
-
-    console.log(
-      `Dashboard password configured: ${Boolean(
-        DASHBOARD_PASSWORD
       )}`
     );
   }
