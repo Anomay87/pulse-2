@@ -7,18 +7,19 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 
-const KR_CSV_URL = process.env.KR_CSV_URL;
-const ACCESS_CSV_URL = process.env.ACCESS_CSV_URL;
-const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD;
+const KR_CSV_URL = process.env.KR_CSV_URL || "";
+const ACCESS_CSV_URL = process.env.ACCESS_CSV_URL || "";
+const DASHBOARD_PASSWORD =
+  process.env.DASHBOARD_PASSWORD || "";
 
 const SESSION_SECRET =
   process.env.SESSION_SECRET ||
-  "kr-pulse-development-secret-change-this";
+  "kr-pulse-development-secret";
 
 const REFRESH_MS = 5 * 60 * 1000;
 
 /* =========================================================
-   BASIC APP SETUP
+   APP SETUP
 ========================================================= */
 
 app.use(express.json({ limit: "100kb" }));
@@ -37,7 +38,11 @@ app.use(
   })
 );
 
-app.use(express.static(path.join(__dirname, "public")));
+app.use(
+  express.static(
+    path.join(__dirname, "public")
+  )
+);
 
 /* =========================================================
    CACHE
@@ -67,7 +72,10 @@ function normText(value) {
 }
 
 function num(value) {
-  if (value === null || value === undefined) {
+  if (
+    value === null ||
+    value === undefined
+  ) {
     return null;
   }
 
@@ -96,7 +104,9 @@ function num(value) {
 
   if (range) {
     return (
-      (Number(range[1]) + Number(range[2])) / 2
+      (Number(range[1]) +
+        Number(range[2])) /
+      2
     );
   }
 
@@ -104,37 +114,49 @@ function num(value) {
     /-?\d+(?:\.\d+)?/
   );
 
-  return match ? Number(match[0]) : null;
+  return match
+    ? Number(match[0])
+    : null;
 }
 
-function isPercentLike(header, rawValue) {
+function isPercentLike(
+  header,
+  rawValue
+) {
   return (
     /%|percent|percentage|i2h|pay/i.test(
       String(header ?? "")
     ) ||
-    /%/.test(String(rawValue ?? ""))
+    /%/.test(
+      String(rawValue ?? "")
+    )
   );
 }
 
 function headersFromRows(rows) {
-  if (!rows.length) {
-    return [];
-  }
-
-  return Object.keys(rows[0]);
+  return rows.length
+    ? Object.keys(rows[0])
+    : [];
 }
 
-function findColumn(headers, patterns) {
-  const keyed = headers.map((header) => ({
-    raw: header,
-    key: cleanKey(header),
-  }));
+function findColumn(
+  headers,
+  patterns
+) {
+  const keyed = headers.map(
+    (header) => ({
+      raw: header,
+      key: cleanKey(header),
+    })
+  );
 
   for (const pattern of patterns) {
-    const regex = new RegExp(pattern, "i");
+    const regex =
+      new RegExp(pattern, "i");
 
-    const found = keyed.find((item) =>
-      regex.test(item.key)
+    const found = keyed.find(
+      (item) =>
+        regex.test(item.key)
     );
 
     if (found) {
@@ -146,7 +168,7 @@ function findColumn(headers, patterns) {
 }
 
 /* =========================================================
-   KR DATA - LONG FORMAT
+   KR DATA PARSER
 ========================================================= */
 
 function inferLongRows(rows) {
@@ -154,54 +176,63 @@ function inferLongRows(rows) {
     return [];
   }
 
-  const headers = headersFromRows(rows);
+  const headers =
+    headersFromRows(rows);
 
-  const programCol = findColumn(headers, [
-    "program",
-    "course",
-    "vertical",
-    "business_unit",
-    "stream",
-  ]);
+  const programCol =
+    findColumn(headers, [
+      "program",
+      "course",
+      "vertical",
+      "business_unit",
+      "stream",
+    ]);
 
-  const stakeholderCol = findColumn(headers, [
-    "stakeholder",
-    "owner",
-    "instructor",
-    "person",
-    "module_owner",
-  ]);
+  const stakeholderCol =
+    findColumn(headers, [
+      "stakeholder",
+      "owner",
+      "instructor",
+      "person",
+      "module_owner",
+    ]);
 
-  const metricCol = findColumn(headers, [
-    "metric",
-    "kr",
-    "kpi",
-    "key_result",
-    "measure",
-    "goal",
-  ]);
+  const metricCol =
+    findColumn(headers, [
+      "metric",
+      "kr",
+      "kpi",
+      "key_result",
+      "measure",
+    ]);
 
-  const targetCol = findColumn(headers, [
-    "target",
-    "target_value",
-    "goal",
-  ]);
+  const targetCol =
+    findColumn(headers, [
+      "target",
+      "target_value",
+    ]);
 
-  const actualCol = findColumn(headers, [
-    "actual",
-    "current",
-    "achieved",
-    "value",
-  ]);
+  const actualCol =
+    findColumn(headers, [
+      "actual",
+      "current",
+      "achieved",
+      "value",
+    ]);
 
-  const monthCol = findColumn(headers, [
-    "month",
-    "period",
-    "date",
-    "timeline",
-  ]);
+  const monthCol =
+    findColumn(headers, [
+      "month",
+      "period",
+      "date",
+      "timeline",
+    ]);
 
-  if (!metricCol || !targetCol || !actualCol) {
+  if (
+    !metricCol ||
+    !targetCol ||
+    !actualCol
+  ) {
     return null;
   }
 
@@ -264,65 +295,69 @@ function inferLongRows(rows) {
     );
 }
 
-/* =========================================================
-   KR DATA - WIDE FORMAT
-========================================================= */
-
 function inferWideRows(rows) {
   if (!rows.length) {
     return [];
   }
 
-  const headers = headersFromRows(rows);
+  const headers =
+    headersFromRows(rows);
 
-  const programCol = findColumn(headers, [
-    "program",
-    "course",
-    "vertical",
-    "business_unit",
-    "stream",
-  ]);
+  const programCol =
+    findColumn(headers, [
+      "program",
+      "course",
+      "vertical",
+      "business_unit",
+      "stream",
+    ]);
 
-  const stakeholderCol = findColumn(headers, [
-    "stakeholder",
-    "owner",
-    "instructor",
-    "person",
-    "module_owner",
-  ]);
+  const stakeholderCol =
+    findColumn(headers, [
+      "stakeholder",
+      "owner",
+      "instructor",
+      "person",
+      "module_owner",
+    ]);
 
-  const monthCol = findColumn(headers, [
-    "month",
-    "period",
-    "date",
-    "timeline",
-  ]);
+  const monthCol =
+    findColumn(headers, [
+      "month",
+      "period",
+      "date",
+      "timeline",
+    ]);
 
   const metricPairs = [];
 
   for (const header of headers) {
     const key = cleanKey(header);
 
-    if (/target|goal/.test(key)) {
+    if (
+      /target|goal/.test(key)
+    ) {
       const base = key.replace(
         /_?target|_?goal/g,
         ""
       );
 
-      const actualCol = headers.find(
-        (candidate) => {
-          const candidateKey =
-            cleanKey(candidate);
+      const actualCol =
+        headers.find(
+          (candidate) => {
+            const candidateKey =
+              cleanKey(candidate);
 
-          return (
-            candidateKey ===
-              `${base}_actual` ||
-            candidateKey ===
-              `${base}_current` ||
-            candidateKey === base
-          );
-        }
-      );
+            return (
+              candidateKey ===
+                `${base}_actual` ||
+              candidateKey ===
+                `${base}_current` ||
+              candidateKey ===
+                base
+            );
+          }
+        );
 
       if (actualCol) {
         metricPairs.push({
@@ -331,7 +366,6 @@ function inferWideRows(rows) {
             .trim(),
 
           targetCol: header,
-
           actualCol,
         });
       }
@@ -344,87 +378,91 @@ function inferWideRows(rows) {
 
   const output = [];
 
-  rows.forEach((row, index) => {
-    metricPairs.forEach((pair) => {
-      if (
-        row[pair.targetCol] === undefined &&
-        row[pair.actualCol] === undefined
-      ) {
-        return;
-      }
+  rows.forEach(
+    (row, index) => {
+      metricPairs.forEach(
+        (pair) => {
+          const metricName =
+            pair.metric.replace(
+              /\b\w/g,
+              (char) =>
+                char.toUpperCase()
+            );
 
-      const metricName =
-        pair.metric.replace(
-          /\b\w/g,
-          (char) =>
-            char.toUpperCase()
-        );
+          output.push({
+            id: `${index}-${metricName}`,
 
-      output.push({
-        id: `${index}-${metricName}`,
+            program: normText(
+              programCol
+                ? row[programCol]
+                : "All"
+            ),
 
-        program: normText(
-          programCol
-            ? row[programCol]
-            : "All"
-        ),
+            stakeholder:
+              normText(
+                stakeholderCol
+                  ? row[
+                      stakeholderCol
+                    ]
+                  : "Team"
+              ),
 
-        stakeholder: normText(
-          stakeholderCol
-            ? row[stakeholderCol]
-            : "Team"
-        ),
+            metric:
+              metricName,
 
-        metric: metricName,
+            target: num(
+              row[pair.targetCol]
+            ),
 
-        target: num(
-          row[pair.targetCol]
-        ),
+            actual: num(
+              row[pair.actualCol]
+            ),
 
-        actual: num(
-          row[pair.actualCol]
-        ),
+            targetRaw:
+              normText(
+                row[pair.targetCol]
+              ),
 
-        targetRaw: normText(
-          row[pair.targetCol]
-        ),
+            actualRaw:
+              normText(
+                row[pair.actualCol]
+              ),
 
-        actualRaw: normText(
-          row[pair.actualCol]
-        ),
+            month: normText(
+              monthCol
+                ? row[monthCol]
+                : ""
+            ),
 
-        month: normText(
-          monthCol
-            ? row[monthCol]
-            : ""
-        ),
-
-        unit:
-          isPercentLike(
-            metricName,
-            row[pair.targetCol]
-          )
-            ? "%"
-            : "",
-      });
-    });
-  });
+            unit:
+              isPercentLike(
+                metricName,
+                row[pair.targetCol]
+              )
+                ? "%"
+                : "",
+          });
+        }
+      );
+    }
+  );
 
   return output;
 }
 
-/* =========================================================
-   GOOGLE SHEET KR NORMALIZATION
-========================================================= */
-
-function normalizeMetrics(csvText) {
-  const rows = parse(csvText, {
-    columns: true,
-    skip_empty_lines: true,
-    relax_column_count: true,
-    bom: true,
-    trim: true,
-  });
+function normalizeMetrics(
+  csvText
+) {
+  const rows = parse(
+    csvText,
+    {
+      columns: true,
+      skip_empty_lines: true,
+      relax_column_count: true,
+      bom: true,
+      trim: true,
+    }
+  );
 
   const longRows =
     inferLongRows(rows);
@@ -437,17 +475,22 @@ function normalizeMetrics(csvText) {
 }
 
 /* =========================================================
-   ACCESS DATA
+   ACCESS PARSER
 ========================================================= */
 
-function normalizeAccess(csvText) {
-  const rows = parse(csvText, {
-    columns: true,
-    skip_empty_lines: true,
-    relax_column_count: true,
-    bom: true,
-    trim: true,
-  });
+function normalizeAccess(
+  csvText
+) {
+  const rows = parse(
+    csvText,
+    {
+      columns: true,
+      skip_empty_lines: true,
+      relax_column_count: true,
+      bom: true,
+      trim: true,
+    }
+  );
 
   if (!rows.length) {
     return [];
@@ -456,28 +499,33 @@ function normalizeAccess(csvText) {
   const headers =
     headersFromRows(rows);
 
-  const userCol = findColumn(headers, [
-    "username",
-    "user",
-    "login",
-    "email",
-    "employee_email",
-  ]);
+  const userCol =
+    findColumn(headers, [
+      "username",
+      "user",
+      "login",
+      "email",
+    ]);
 
-  const passCol = findColumn(headers, [
-    "password",
-    "pass",
-    "pwd",
-  ]);
+  const passCol =
+    findColumn(headers, [
+      "password",
+      "pass",
+      "pwd",
+    ]);
 
-  const programCol = findColumn(headers, [
-    "program",
-    "course",
-    "vertical",
-    "access",
-  ]);
+  const programCol =
+    findColumn(headers, [
+      "program",
+      "course",
+      "vertical",
+      "access",
+    ]);
 
-  if (!userCol || !passCol) {
+  if (
+    !userCol ||
+    !passCol
+  ) {
     return [];
   }
 
@@ -505,19 +553,22 @@ function normalizeAccess(csvText) {
 }
 
 /* =========================================================
-   FETCH GOOGLE CSV
+   GOOGLE SHEET FETCH
 ========================================================= */
 
-async function fetchText(url) {
+async function fetchText(
+  url
+) {
   if (!url) {
     throw new Error(
       "Google Sheet URL is not configured."
     );
   }
 
-  const response = await fetch(url, {
-    redirect: "follow",
-  });
+  const response =
+    await fetch(url, {
+      redirect: "follow",
+    });
 
   if (!response.ok) {
     throw new Error(
@@ -529,53 +580,52 @@ async function fetchText(url) {
 }
 
 /* =========================================================
-   LOAD DATA
+   LOAD GOOGLE SHEET DATA
 ========================================================= */
 
-async function getData(force = false) {
+async function getData(
+  force = false
+) {
   const cacheIsFresh =
-    cache.metrics &&
     cache.fetchedAt &&
-    Date.now() - cache.fetchedAt <
+    Date.now() -
+        cache.fetchedAt <
       REFRESH_MS;
 
-  if (!force && cacheIsFresh) {
+  if (
+    !force &&
+    cacheIsFresh
+  ) {
     return cache;
   }
 
   let metrics = [];
 
   try {
-    const krCsv =
-      await fetchText(
-        KR_CSV_URL
-      );
+    if (KR_CSV_URL) {
+      const krCsv =
+        await fetchText(
+          KR_CSV_URL
+        );
 
-    metrics =
-      normalizeMetrics(
-        krCsv
-      );
+      metrics =
+        normalizeMetrics(
+          krCsv
+        );
+    }
   } catch (error) {
     console.error(
       "KR CSV error:",
       error.message
     );
 
-    /*
-     * IMPORTANT:
-     * We don't crash the dashboard if
-     * Google Sheet parsing fails.
-     *
-     * The dashboard can still open and
-     * tell us that data could not load.
-     */
     metrics = [];
   }
 
   let access = [];
 
-  if (ACCESS_CSV_URL) {
-    try {
+  try {
+    if (ACCESS_CSV_URL) {
       const accessCsv =
         await fetchText(
           ACCESS_CSV_URL
@@ -585,21 +635,44 @@ async function getData(force = false) {
         normalizeAccess(
           accessCsv
         );
-    } catch (error) {
-      console.warn(
-        "Access CSV error:",
-        error.message
-      );
     }
+  } catch (error) {
+    console.warn(
+      "Access CSV error:",
+      error.message
+    );
   }
 
   cache = {
     metrics,
     access,
-    fetchedAt: Date.now(),
+    fetchedAt:
+      Date.now(),
   };
 
   return cache;
+}
+
+/* =========================================================
+   AUTH MIDDLEWARE
+========================================================= */
+
+function requireAuth(
+  req,
+  res,
+  next
+) {
+  if (
+    !req.session ||
+    !req.session.user
+  ) {
+    return res.status(401).json({
+      error:
+        "Unauthorized",
+    });
+  }
+
+  next();
 }
 
 /* =========================================================
@@ -625,25 +698,15 @@ app.post(
         });
       }
 
-      const validUsername =
-        "founder";
-
       /*
-       * TODAY'S FOUNDER LOGIN
-       *
-       * Username:
-       * founder
-       *
-       * Password:
-       * value stored in Railway
-       * DASHBOARD_PASSWORD
+       * Founder login for today's demo.
        */
 
       if (
         String(username)
           .trim()
           .toLowerCase() !==
-        validUsername
+        "founder"
       ) {
         return res.status(401).json({
           error:
@@ -656,7 +719,7 @@ app.post(
       ) {
         return res.status(500).json({
           error:
-            "DASHBOARD_PASSWORD is missing in Railway Variables.",
+            "DASHBOARD_PASSWORD is not configured in Railway.",
         });
       }
 
@@ -672,17 +735,11 @@ app.post(
         });
       }
 
-      /*
-       * IMPORTANT:
-       * Do NOT fetch Google Sheets here.
-       *
-       * Login should succeed independently
-       * from Google Sheet parsing.
-       */
-
       req.session.user = {
-        username: "founder",
-        program: "All",
+        username:
+          "founder",
+        program:
+          "All",
       };
 
       return res.json({
@@ -692,7 +749,8 @@ app.post(
           req.session.user,
 
         fetchedAt:
-          cache.fetchedAt || null,
+          cache.fetchedAt ||
+          null,
       });
     } catch (error) {
       console.error(
@@ -734,14 +792,16 @@ app.get(
   (req, res) => {
     res.json({
       user:
-        req.session.user ||
-        null,
+        req.session &&
+        req.session.user
+          ? req.session.user
+          : null,
     });
   }
 );
 
 /* =========================================================
-   KR METRICS
+   METRICS
 ========================================================= */
 
 app.get(
@@ -749,11 +809,6 @@ app.get(
   requireAuth,
   async (req, res) => {
     try {
-      /*
-       * Fetch fresh Google Sheet data
-       * whenever cache is older than 5 minutes.
-       */
-
       const data =
         await getData(false);
 
@@ -772,23 +827,20 @@ app.get(
       });
     } catch (error) {
       console.error(
-        "Metrics endpoint error:",
+        "Metrics error:",
         error
       );
 
       return res.status(500).json({
         error:
           "Could not fetch metrics.",
-
-        details:
-          error.message,
       });
     }
   }
 );
 
 /* =========================================================
-   MANUAL REFRESH
+   FORCE REFRESH
 ========================================================= */
 
 app.post(
@@ -831,10 +883,8 @@ app.get(
   (req, res) => {
     res.json({
       status: "ok",
-
       service:
         "KR Pulse",
-
       timestamp:
         new Date().toISOString(),
     });
