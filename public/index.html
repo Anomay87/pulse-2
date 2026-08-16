@@ -1,1 +1,416 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
 
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1"
+  />
+
+  <meta
+    name="description"
+    content="KR Pulse — Executive Instructor Team Performance Dashboard"
+  />
+
+  <title>KR Pulse — Executive Dashboard</title>
+
+  <link
+    rel="stylesheet"
+    href="/styles.css"
+  />
+</head>
+
+<body>
+
+  <!-- =========================
+       LOGIN SCREEN
+  ========================== -->
+
+  <div id="loginView" class="screen">
+
+    <div class="login-shell">
+
+      <div class="brand">
+        KR PULSE
+      </div>
+
+      <h1>
+        Executive performance,<br />
+        <span>without the spreadsheet.</span>
+      </h1>
+
+      <p class="muted">
+        A live view of instructor-team KRs,
+        automatically synced from Google Sheets.
+      </p>
+
+      <form
+        id="loginForm"
+        class="login-card"
+      >
+
+        <label>
+          Username
+
+          <input
+            id="username"
+            type="text"
+            autocomplete="username"
+            placeholder="Username"
+            required
+          />
+        </label>
+
+        <label>
+          Password
+
+          <input
+            id="password"
+            type="password"
+            autocomplete="current-password"
+            placeholder="Password"
+            required
+          />
+        </label>
+
+        <button type="submit">
+          Enter dashboard
+          <span>→</span>
+        </button>
+
+        <div
+          id="loginError"
+          class="error"
+        ></div>
+
+      </form>
+
+      <div class="login-foot">
+        Internal • Live data • Refreshes every 5 minutes
+      </div>
+
+    </div>
+
+  </div>
+
+
+  <!-- =========================
+       DASHBOARD
+  ========================== -->
+
+  <div id="appView" class="app hidden">
+
+    <!-- TOP NAV -->
+
+    <header class="topbar">
+
+      <div>
+
+        <div class="eyebrow">
+          INSTRUCTOR TEAM
+        </div>
+
+        <div class="title">
+          KR Pulse
+        </div>
+
+      </div>
+
+      <div class="top-actions">
+
+        <div class="live-pill">
+
+          <span class="live-dot"></span>
+
+          <span id="lastUpdated">
+            Live
+          </span>
+
+        </div>
+
+        <button
+          id="refreshBtn"
+          class="icon-btn"
+          title="Refresh data"
+          type="button"
+        >
+          ↻
+        </button>
+
+        <button
+          id="logoutBtn"
+          class="ghost-btn"
+          type="button"
+        >
+          Log out
+        </button>
+
+      </div>
+
+    </header>
+
+
+    <!-- MAIN -->
+
+    <main>
+
+      <!-- HERO -->
+
+      <section class="hero">
+
+        <div>
+
+          <p class="kicker">
+            EXECUTIVE VIEW
+          </p>
+
+          <h1>
+            Know exactly where
+            the team stands.
+          </h1>
+
+          <p class="muted hero-copy">
+            Program performance, target attainment
+            and monthly momentum — in one place.
+          </p>
+
+        </div>
+
+        <div class="hero-stat">
+
+          <div
+            id="overallScore"
+            class="big-score"
+          >
+            —
+          </div>
+
+          <div class="muted">
+            overall target attainment
+          </div>
+
+        </div>
+
+      </section>
+
+
+      <!-- PROGRAM TOGGLE -->
+
+      <section class="program-switch">
+
+        <button
+          class="program-tab active"
+          data-program="All"
+          type="button"
+        >
+          All
+        </button>
+
+        <div id="programTabs"></div>
+
+      </section>
+
+
+      <!-- SUMMARY -->
+
+      <section class="summary-grid">
+
+        <div class="summary-card">
+
+          <div class="summary-label">
+            ON TRACK
+          </div>
+
+          <div
+            id="onTrack"
+            class="summary-value positive"
+          >
+            —
+          </div>
+
+          <div class="summary-sub">
+            metrics at or above target
+          </div>
+
+        </div>
+
+
+        <div class="summary-card">
+
+          <div class="summary-label">
+            AT RISK
+          </div>
+
+          <div
+            id="atRisk"
+            class="summary-value negative"
+          >
+            —
+          </div>
+
+          <div class="summary-sub">
+            metrics below target
+          </div>
+
+        </div>
+
+
+        <div class="summary-card">
+
+          <div class="summary-label">
+            METRICS
+          </div>
+
+          <div
+            id="metricCount"
+            class="summary-value"
+          >
+            —
+          </div>
+
+          <div class="summary-sub">
+            currently being tracked
+          </div>
+
+        </div>
+
+
+        <div class="summary-card">
+
+          <div class="summary-label">
+            LAST SYNC
+          </div>
+
+          <div
+            id="syncAge"
+            class="summary-value"
+          >
+            —
+          </div>
+
+          <div class="summary-sub">
+            from Google Sheets
+          </div>
+
+        </div>
+
+      </section>
+
+
+      <!-- KEY RESULTS -->
+
+      <section>
+
+        <div class="section-head">
+
+          <div>
+
+            <div class="kicker">
+              KEY RESULTS
+            </div>
+
+            <h2 id="sectionTitle">
+              All programs
+            </h2>
+
+          </div>
+
+          <div class="legend">
+
+            <span
+              class="legend-dot good"
+            ></span>
+
+            On track
+
+            <span
+              class="legend-dot bad"
+            ></span>
+
+            Needs attention
+
+          </div>
+
+        </div>
+
+
+        <div
+          id="cards"
+          class="metric-grid"
+        ></div>
+
+      </section>
+
+
+      <!-- TREND -->
+
+      <section class="trend-section">
+
+        <div class="section-head">
+
+          <div>
+
+            <div class="kicker">
+              MOMENTUM
+            </div>
+
+            <h2>
+              Monthly movement
+            </h2>
+
+          </div>
+
+          <select
+            id="metricSelect"
+            class="select"
+          ></select>
+
+        </div>
+
+
+        <div class="chart-card">
+
+          <svg
+            id="chart"
+            viewBox="0 0 1000 360"
+            preserveAspectRatio="none"
+          ></svg>
+
+          <div
+            id="chartLabels"
+            class="chart-labels"
+          ></div>
+
+        </div>
+
+      </section>
+
+
+      <!-- FOOTER -->
+
+      <footer>
+
+        <span>
+          Source: Google Sheets
+        </span>
+
+        <span>
+          Auto-refresh: 5 minutes
+        </span>
+
+        <span id="footerUser"></span>
+
+      </footer>
+
+    </main>
+
+  </div>
+
+
+  <!-- JAVASCRIPT -->
+
+  <script src="/app.js"></script>
+
+</body>
+</html>
