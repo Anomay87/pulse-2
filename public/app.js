@@ -1,27 +1,39 @@
 let rows = [];
-let selectedProgram = "All";
-let selectedMetric = "";
 
-const $ = (selector) => document.querySelector(selector);
+let expandedProgram = null;
+
+const $ = (selector) =>
+  document.querySelector(selector);
 
 /* =========================================================
-   API HELPER
+   API
 ========================================================= */
 
-async function api(url, options = {}) {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
+async function api(
+  url,
+  options = {}
+) {
+  const response =
+    await fetch(url, {
+      ...options,
 
-  const data = await response.json().catch(() => ({}));
+      headers: {
+        "Content-Type":
+          "application/json",
+
+        ...(options.headers || {}),
+      },
+    });
+
+  const data =
+    await response
+      .json()
+      .catch(() => ({}));
 
   if (!response.ok) {
     throw new Error(
-      data.error || `Request failed (${response.status})`
+      data.error ||
+        `Request failed (${response.status})`
     );
   }
 
@@ -29,37 +41,19 @@ async function api(url, options = {}) {
 }
 
 /* =========================================================
-   SHOW DASHBOARD
-========================================================= */
-
-function showDashboard() {
-  const loginView = $("#loginView");
-  const appView = $("#appView");
-
-  if (loginView) {
-    loginView.classList.add("hidden");
-  }
-
-  if (appView) {
-    appView.classList.remove("hidden");
-  }
-}
-
-/* =========================================================
-   START
+   BOOT
 ========================================================= */
 
 async function boot() {
-  // Emergency demo mode:
-  // Open dashboard directly without blocking on login.
-
-  showDashboard();
-
   try {
     await loadMetrics();
   } catch (error) {
-    console.error("Initial load failed:", error);
-    showMetricsError(error.message);
+    console.error(error);
+
+    showSystemMessage(
+      error.message ||
+        "Unable to load dashboard."
+    );
   }
 }
 
@@ -67,958 +61,1652 @@ async function boot() {
    LOAD METRICS
 ========================================================= */
 
-async function loadMetrics(forceRefresh = false) {
+async function loadMetrics(
+  forceRefresh = false
+) {
   try {
+
     if (forceRefresh) {
+
       try {
-        await api("/api/refresh", {
-          method: "POST",
-        });
+
+        await api(
+          "/api/refresh",
+          {
+            method: "POST",
+          }
+        );
+
       } catch (error) {
-        console.warn("Refresh request failed:", error);
+
+        console.warn(
+          "Refresh failed:",
+          error
+        );
+
       }
+
     }
 
-    const result = await api("/api/metrics");
-
-    rows = Array.isArray(result.rows)
-      ? result.rows
-      : [];
-
-    updateLastUpdated(result.fetchedAt);
-
-    buildPrograms();
-    render();
-
-    if (!rows.length) {
-      showMetricsError(
-        "The dashboard is live, but no readable KR rows were returned from Google Sheets."
+    const result =
+      await api(
+        "/api/metrics"
       );
-    }
-  } catch (error) {
-    console.error("Metrics load failed:", error);
 
-    showMetricsError(
-      error.message ||
-        "Unable to load Google Sheet data."
+    rows =
+      Array.isArray(
+        result.rows
+      )
+        ? result.rows
+        : [];
+
+    updateSyncTime(
+      result.fetchedAt
     );
+
+    renderDashboard();
+
+    hideSystemMessage();
+
+  } catch (error) {
+
+    console.error(
+      "Metrics error:",
+      error
+    );
+
+    showSystemMessage(
+      error.message ||
+        "Unable to read Google Sheets."
+    );
+
   }
 }
 
 /* =========================================================
-   REFRESH BUTTON
+   REFRESH
 ========================================================= */
 
-const refreshButton = $("#refreshBtn");
+const refreshBtn =
+  $("#refreshBtn");
 
-if (refreshButton) {
-  refreshButton.addEventListener("click", async () => {
-    refreshButton.disabled = true;
-    refreshButton.textContent = "…";
+if (refreshBtn) {
 
-    try {
-      await loadMetrics(true);
-    } finally {
-      refreshButton.disabled = false;
-      refreshButton.textContent = "↻";
+  refreshBtn.addEventListener(
+    "click",
+    async () => {
+
+      refreshBtn.classList.add(
+        "spinning"
+      );
+
+      refreshBtn.disabled =
+        true;
+
+      try {
+
+        await loadMetrics(
+          true
+        );
+
+      } finally {
+
+        refreshBtn.disabled =
+          false;
+
+        refreshBtn.classList.remove(
+          "spinning"
+        );
+
+      }
+
     }
-  });
+  );
+
 }
 
 /* =========================================================
-   METRICS ERROR
+   SYNC TIME
 ========================================================= */
 
-function showMetricsError(message) {
-  const cards = $("#cards");
+function updateSyncTime(
+  timestamp
+) {
 
-  if (!cards) {
+  const element =
+    $("#lastUpdated");
+
+  if (!element) {
     return;
   }
 
-  cards.innerHTML = `
-    <div class="metric-card bad">
+  if (!timestamp) {
 
-      <div class="metric-top">
+    element.textContent =
+      "Waiting for data";
 
-        <div>
+    return;
 
-          <div class="metric-name">
-            Dashboard is live
+  }
+
+  const date =
+    new Date(timestamp);
+
+  element.textContent =
+    `Updated ${date.toLocaleTimeString(
+      [],
+      {
+        hour: "2-digit",
+        minute: "2-digit",
+      }
+    )}`;
+}
+
+/* =========================================================
+   DASHBOARD
+========================================================= */
+
+function renderDashboard() {
+
+  const programs =
+    getPrograms();
+
+  renderOverallSummary();
+
+  renderPrograms(
+    programs
+  );
+
+}
+
+/* =========================================================
+   PROGRAM LIST
+========================================================= */
+
+function getPrograms() {
+
+  return [
+    ...new Set(
+      rows
+        .map(
+          (row) =>
+            String(
+              row.program || ""
+            ).trim()
+        )
+        .filter(Boolean)
+    ),
+  ];
+
+}
+
+/* =========================================================
+   OVERALL SUMMARY
+========================================================= */
+
+function renderOverallSummary() {
+
+  const metrics =
+    rows.filter(
+      (row) =>
+        row.actual !== null &&
+        row.actual !== undefined &&
+        row.target !== null &&
+        row.target !== undefined
+    );
+
+  let onTrack = 0;
+
+  let atRisk = 0;
+
+  let achievementScores = [];
+
+  metrics.forEach(
+    (metric) => {
+
+      const status =
+        getMetricStatus(
+          metric
+        );
+
+      if (
+        status.onTrack
+      ) {
+
+        onTrack++;
+
+      } else {
+
+        atRisk++;
+
+      }
+
+      const score =
+        getAchievementScore(
+          metric
+        );
+
+      if (
+        score !== null
+      ) {
+
+        achievementScores.push(
+          Math.min(
+            score,
+            1.25
+          )
+        );
+
+      }
+
+    }
+  );
+
+  const average =
+    achievementScores.length
+      ? achievementScores.reduce(
+          (sum, value) =>
+            sum + value,
+          0
+        ) /
+        achievementScores.length
+      : null;
+
+  $("#onTrack").textContent =
+    onTrack;
+
+  $("#atRisk").textContent =
+    atRisk;
+
+  $("#metricCount").textContent =
+    rows.length;
+
+  $("#overallScore").textContent =
+    average === null
+      ? "—"
+      : `${Math.round(
+          average * 100
+        )}%`;
+}
+
+/* =========================================================
+   PROGRAM ACCORDION
+========================================================= */
+
+function renderPrograms(
+  programs
+) {
+
+  const container =
+    $("#programAccordion");
+
+  if (!container) {
+    return;
+  }
+
+  container.innerHTML =
+    "";
+
+  programs.forEach(
+    (program) => {
+
+      const programRows =
+        rows.filter(
+          (row) =>
+            String(
+              row.program
+            ).toLowerCase() ===
+            String(
+              program
+            ).toLowerCase()
+        );
+
+      const latestRows =
+        programRows;
+
+      const health =
+        calculateProgramHealth(
+          latestRows
+        );
+
+      const isExpanded =
+        expandedProgram ===
+        program;
+
+      const programBlock =
+        document.createElement(
+          "div"
+        );
+
+      programBlock.className =
+        `program-block ${
+          isExpanded
+            ? "expanded"
+            : ""
+        }`;
+
+      /* ----------------------------------
+         PROGRAM HEADER
+      ----------------------------------- */
+
+      const header =
+        document.createElement(
+          "button"
+        );
+
+      header.type =
+        "button";
+
+      header.className =
+        "program-header";
+
+      header.innerHTML = `
+
+        <div class="program-header-left">
+
+          <div class="program-chevron">
+            ${isExpanded
+              ? "⌄"
+              : "›"}
           </div>
 
-          <div class="metric-owner">
-            Waiting for readable Google Sheets data
+          <div>
+
+            <div class="program-name">
+              ${escapeHtml(
+                program
+              )}
+            </div>
+
+            <div class="program-meta">
+              ${
+                latestRows.length
+              }
+              metrics tracked
+            </div>
+
           </div>
 
         </div>
 
-        <div class="status bad">
-          DATA PENDING
+
+        <div class="program-header-right">
+
+          <div class="program-health">
+
+            <span class="program-health-label">
+              ${
+                health.label
+              }
+            </span>
+
+            <span
+              class="health-dot ${
+                health.status
+              }"
+            ></span>
+
+          </div>
+
+          <div class="program-score">
+            ${
+              health.score ===
+              null
+                ? "—"
+                : `${Math.round(
+                    health.score *
+                      100
+                  )}%`
+            }
+          </div>
+
+        </div>
+
+      `;
+
+      header.addEventListener(
+        "click",
+        () => {
+
+          if (
+            expandedProgram ===
+            program
+          ) {
+
+            expandedProgram =
+              null;
+
+          } else {
+
+            expandedProgram =
+              program;
+
+          }
+
+          renderPrograms(
+            programs
+          );
+
+        }
+      );
+
+      programBlock.appendChild(
+        header
+      );
+
+
+      /* ----------------------------------
+         DETAILS
+      ----------------------------------- */
+
+      if (isExpanded) {
+
+        const detail =
+          document.createElement(
+            "div"
+          );
+
+        detail.className =
+          "program-details";
+
+        const metricsGrid =
+          document.createElement(
+            "div"
+          );
+
+        metricsGrid.className =
+          "metrics-grid";
+
+        latestRows.forEach(
+          (metric) => {
+
+            metricsGrid.appendChild(
+              createMetricCard(
+                metric
+              )
+            );
+
+          }
+        );
+
+        detail.appendChild(
+          metricsGrid
+        );
+
+        programBlock.appendChild(
+          detail
+        );
+
+      }
+
+      container.appendChild(
+        programBlock
+      );
+
+    }
+  );
+
+}
+
+/* =========================================================
+   PROGRAM HEALTH
+========================================================= */
+
+function calculateProgramHealth(
+  metrics
+) {
+
+  const valid =
+    metrics.filter(
+      (metric) =>
+        metric.actual !==
+          null &&
+        metric.actual !==
+          undefined &&
+        metric.target !==
+          null &&
+        metric.target !==
+          undefined
+    );
+
+  if (!valid.length) {
+
+    return {
+      score: null,
+      label: "No data",
+      status: "neutral",
+    };
+
+  }
+
+  let good = 0;
+
+  let scores = [];
+
+  valid.forEach(
+    (metric) => {
+
+      const status =
+        getMetricStatus(
+          metric
+        );
+
+      if (
+        status.onTrack
+      ) {
+        good++;
+      }
+
+      const score =
+        getAchievementScore(
+          metric
+        );
+
+      if (
+        score !== null
+      ) {
+        scores.push(
+          Math.min(
+            score,
+            1.25
+          )
+        );
+      }
+
+    }
+  );
+
+  const score =
+    scores.length
+      ? scores.reduce(
+          (sum, value) =>
+            sum + value,
+          0
+        ) /
+        scores.length
+      : null;
+
+  const percentage =
+    valid.length
+      ? good /
+        valid.length
+      : 0;
+
+  if (
+    percentage >= 0.75
+  ) {
+
+    return {
+      score,
+      label:
+        "Strong",
+      status:
+        "good",
+    };
+
+  }
+
+  if (
+    percentage >= 0.5
+  ) {
+
+    return {
+      score,
+      label:
+        "Mixed",
+      status:
+        "warning",
+    };
+
+  }
+
+  return {
+    score,
+    label:
+      "Needs attention",
+    status:
+      "bad",
+  };
+
+}
+
+/* =========================================================
+   METRIC CARD
+========================================================= */
+
+function createMetricCard(
+  metric
+) {
+
+  const card =
+    document.createElement(
+      "article"
+    );
+
+  const status =
+    getMetricStatus(
+      metric
+    );
+
+  const score =
+    getAchievementScore(
+      metric
+    );
+
+  const latest =
+    metric.monthly &&
+    metric.monthly.length
+      ? metric.monthly
+      : [];
+
+  const actualDisplay =
+    formatValue(
+      metric.actual,
+      metric.actualRaw,
+      metric
+    );
+
+  const targetDisplay =
+    formatValue(
+      metric.target,
+      metric.targetRaw,
+      metric
+    );
+
+  const descriptor =
+    getMetricDescriptor(
+      metric
+    );
+
+  card.className =
+    `metric-card ${
+      status.onTrack
+        ? "metric-good"
+        : status.isComparable
+        ? "metric-bad"
+        : "metric-neutral"
+    }`;
+
+  card.innerHTML = `
+
+    <div class="metric-card-top">
+
+      <div>
+
+        <div class="metric-name">
+          ${escapeHtml(
+            metric.metric
+          )}
+        </div>
+
+        <div class="metric-description">
+          ${escapeHtml(
+            descriptor
+          )}
         </div>
 
       </div>
 
       <div
-        style="
-          margin-top:20px;
-          color:#8b98a8;
-          line-height:1.6;
-          font-size:13px;
-        "
+        class="status-pill ${
+          status.className
+        }"
       >
-        ${escapeHtml(
-          message ||
-            "Unable to read the KR data."
-        )}
+        ${status.label}
       </div>
 
-      <div style="margin-top:18px;">
+    </div>
 
-        <button
-          id="retryMetricsBtn"
-          class="ghost-btn"
-          type="button"
-        >
-          Retry
-        </button>
+
+    <div class="metric-main">
+
+      <div class="metric-numbers">
+
+        <div class="metric-current">
+
+          <span class="current-number">
+            ${escapeHtml(
+              actualDisplay
+            )}
+          </span>
+
+          <span class="current-label">
+            current
+          </span>
+
+        </div>
+
+
+        <div class="metric-target">
+
+          <span class="target-number">
+            ${escapeHtml(
+              targetDisplay
+            )}
+          </span>
+
+          <span class="target-label">
+            target
+          </span>
+
+        </div>
+
+      </div>
+
+
+      <div class="metric-gap">
+
+        ${renderGap(
+          metric
+        )}
 
       </div>
 
     </div>
+
+
+    <div class="metric-progress">
+
+      ${renderProgress(
+        metric
+      )}
+
+    </div>
+
+
+    <div class="trend-heading">
+
+      <span>
+        Month-on-month movement
+      </span>
+
+      <span>
+        ${
+          latest.length
+            ? `${latest.length} months`
+            : ""
+        }
+      </span>
+
+    </div>
+
+
+    <div class="sparkline-wrapper">
+
+      ${renderSparkline(
+        metric
+      )}
+
+    </div>
+
+
+    <div class="month-values">
+
+      ${renderMonthValues(
+        metric
+      )}
+
+    </div>
+
   `;
 
-  const retryButton = $("#retryMetricsBtn");
+  return card;
 
-  if (retryButton) {
-    retryButton.addEventListener("click", () => {
-      loadMetrics(true);
-    });
-  }
-
-  $("#overallScore").textContent = "—";
-  $("#onTrack").textContent = "—";
-  $("#atRisk").textContent = "—";
-  $("#metricCount").textContent = "—";
-  $("#syncAge").textContent = "Pending";
-
-  const metricSelect = $("#metricSelect");
-
-  if (metricSelect) {
-    metricSelect.innerHTML =
-      `<option>No metric data</option>`;
-  }
-
-  const chart = $("#chart");
-
-  if (chart) {
-    chart.innerHTML = `
-      <text
-        x="50%"
-        y="50%"
-        text-anchor="middle"
-        fill="#5d6a79"
-        font-size="14"
-      >
-        Waiting for Google Sheets data
-      </text>
-    `;
-  }
-
-  const chartLabels = $("#chartLabels");
-
-  if (chartLabels) {
-    chartLabels.innerHTML = "";
-  }
 }
 
 /* =========================================================
-   LAST UPDATED
+   METRIC STATUS
 ========================================================= */
 
-function updateLastUpdated(timestamp) {
-  const lastUpdated = $("#lastUpdated");
-  const syncAge = $("#syncAge");
+function getMetricStatus(
+  metric
+) {
 
-  if (!timestamp) {
-    if (lastUpdated) {
-      lastUpdated.textContent = "Waiting for data";
+  const actual =
+    Number(metric.actual);
+
+  const target =
+    Number(metric.target);
+
+  if (
+    metric.actual === null ||
+    metric.actual === undefined ||
+    metric.target === null ||
+    metric.target === undefined ||
+    Number.isNaN(actual) ||
+    Number.isNaN(target)
+  ) {
+
+    return {
+      onTrack: false,
+      isComparable: false,
+      label: "No target",
+      className:
+        "status-neutral",
+    };
+
+  }
+
+  /*
+   * I2H is lower-is-better.
+   */
+
+  if (
+    metric.lowerBetter
+  ) {
+
+    if (
+      actual <=
+      target
+    ) {
+
+      return {
+        onTrack: true,
+        isComparable: true,
+        label: "ON TRACK",
+        className:
+          "status-good",
+      };
+
     }
 
-    if (syncAge) {
-      syncAge.textContent = "Pending";
-    }
+    return {
+      onTrack: false,
+      isComparable: true,
+      label: "AT RISK",
+      className:
+        "status-bad",
+    };
 
-    return;
   }
 
-  const date = new Date(timestamp);
+  /*
+   * Normal KR:
+   * higher is better.
+   */
 
-  if (lastUpdated) {
-    lastUpdated.textContent =
-      `Updated ${date.toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      })}`;
+  if (
+    actual >=
+    target
+  ) {
+
+    return {
+      onTrack: true,
+      isComparable: true,
+      label:
+        "ON TRACK",
+      className:
+        "status-good",
+    };
+
   }
 
-  const minutesAgo = Math.max(
-    0,
-    Math.round(
-      (Date.now() - timestamp) / 60000
-    )
-  );
+  return {
+    onTrack: false,
+    isComparable: true,
+    label:
+      "AT RISK",
+    className:
+      "status-bad",
+  };
 
-  if (syncAge) {
-    syncAge.textContent =
-      minutesAgo <= 0
-        ? "just now"
-        : `${minutesAgo}m ago`;
-  }
 }
 
 /* =========================================================
-   PROGRAM TABS
+   ACHIEVEMENT SCORE
 ========================================================= */
 
-function buildPrograms() {
-  const container = $("#programTabs");
+function getAchievementScore(
+  metric
+) {
 
-  if (!container) {
-    return;
+  const actual =
+    Number(metric.actual);
+
+  const target =
+    Number(metric.target);
+
+  if (
+    metric.actual ===
+      null ||
+    metric.actual ===
+      undefined ||
+    metric.target ===
+      null ||
+    metric.target ===
+      undefined ||
+    Number.isNaN(
+      actual
+    ) ||
+    Number.isNaN(
+      target
+    ) ||
+    target === 0
+  ) {
+
+    return null;
+
   }
 
-  const programs = [
-    ...new Set(
-      rows
-        .map((row) => row.program)
-        .filter(Boolean)
-        .map((program) =>
-          String(program).trim()
-        )
-    ),
-  ].filter(
-    (program) =>
-      program.toLowerCase() !== "all"
-  );
+  if (
+    metric.lowerBetter
+  ) {
 
-  container.innerHTML = "";
+    /*
+     * Lower is better.
+     *
+     * Actual 10
+     * Target 12
+     *
+     * score = 12 / 10 = 120%
+     */
 
-  programs.forEach((program) => {
-    const button =
-      document.createElement("button");
+    if (
+      actual === 0
+    ) {
+      return 1.25;
+    }
 
-    button.type = "button";
-
-    button.className =
-      "program-tab" +
-      (selectedProgram === program
-        ? " active"
-        : "");
-
-    button.dataset.program = program;
-
-    button.textContent = program;
-
-    button.addEventListener("click", () => {
-      selectedProgram = program;
-      render();
-    });
-
-    container.appendChild(button);
-  });
-
-  const allButton =
-    document.querySelector(
-      ".program-tab[data-program='All']"
+    return (
+      target /
+      actual
     );
 
-  if (allButton) {
-    allButton.onclick = () => {
-      selectedProgram = "All";
-      render();
-    };
-  }
-}
-
-/* =========================================================
-   FILTER
-========================================================= */
-
-function filteredRows() {
-  if (selectedProgram === "All") {
-    return rows;
-  }
-
-  return rows.filter(
-    (row) =>
-      String(row.program || "")
-        .toLowerCase() ===
-      selectedProgram.toLowerCase()
-  );
-}
-
-/* =========================================================
-   GROUP LATEST
-========================================================= */
-
-function groupLatest(items) {
-  const grouped = new Map();
-
-  items.forEach((row) => {
-    const key =
-      `${row.metric}|||${row.stakeholder}`;
-
-    const existing = grouped.get(key);
-
-    if (!existing) {
-      grouped.set(key, row);
-      return;
-    }
-
-    const currentMonth =
-      String(row.month || "");
-
-    const previousMonth =
-      String(existing.month || "");
-
-    if (currentMonth >= previousMonth) {
-      grouped.set(key, row);
-    }
-  });
-
-  return [...grouped.values()];
-}
-
-function metricRows() {
-  return groupLatest(filteredRows());
-}
-
-/* =========================================================
-   TARGET RATIO
-========================================================= */
-
-function ratio(row) {
-  if (
-    row.target === null ||
-    row.target === undefined ||
-    row.actual === null ||
-    row.actual === undefined ||
-    Number(row.target) === 0
-  ) {
-    return null;
   }
 
   return (
-    Number(row.actual) /
-    Number(row.target)
-  );
-}
-
-/* =========================================================
-   RENDER
-========================================================= */
-
-function render() {
-  const latestRows = metricRows();
-
-  renderSummary(latestRows);
-  renderCards(latestRows);
-  renderTrendOptions(latestRows);
-  renderTrend();
-
-  document
-    .querySelectorAll(".program-tab")
-    .forEach((button) => {
-      button.classList.toggle(
-        "active",
-        button.dataset.program ===
-          selectedProgram
-      );
-    });
-
-  const sectionTitle =
-    $("#sectionTitle");
-
-  if (sectionTitle) {
-    sectionTitle.textContent =
-      selectedProgram === "All"
-        ? "All programs"
-        : selectedProgram;
-  }
-}
-
-/* =========================================================
-   SUMMARY
-========================================================= */
-
-function renderSummary(latestRows) {
-  const validRows = latestRows.filter(
-    (row) => ratio(row) !== null
+    actual /
+    target
   );
 
-  const onTrack = validRows.filter(
-    (row) => ratio(row) >= 1
-  ).length;
-
-  const atRisk =
-    validRows.length - onTrack;
-
-  const average =
-    validRows.length > 0
-      ? validRows.reduce(
-          (sum, row) =>
-            sum +
-            Math.min(
-              ratio(row),
-              1.25
-            ),
-          0
-        ) / validRows.length
-      : null;
-
-  const onTrackEl = $("#onTrack");
-  const atRiskEl = $("#atRisk");
-  const metricCountEl =
-    $("#metricCount");
-  const overallEl =
-    $("#overallScore");
-
-  if (onTrackEl) {
-    onTrackEl.textContent = onTrack;
-  }
-
-  if (atRiskEl) {
-    atRiskEl.textContent = atRisk;
-  }
-
-  if (metricCountEl) {
-    metricCountEl.textContent =
-      latestRows.length;
-  }
-
-  if (overallEl) {
-    overallEl.textContent =
-      average === null
-        ? "—"
-        : `${Math.round(
-            average * 100
-          )}%`;
-  }
 }
 
 /* =========================================================
-   METRIC CARDS
+   GAP
 ========================================================= */
 
-function renderCards(latestRows) {
-  const container = $("#cards");
+function renderGap(
+  metric
+) {
 
-  if (!container) {
-    return;
-  }
+  if (
+    metric.actual ===
+      null ||
+    metric.actual ===
+      undefined ||
+    metric.target ===
+      null ||
+    metric.target ===
+      undefined
+  ) {
 
-  container.innerHTML = "";
-
-  if (!latestRows.length) {
-    container.innerHTML = `
-      <div class="metric-card">
-
-        <div class="metric-name">
-          No metrics available yet
-        </div>
-
-        <div
-          class="muted"
-          style="margin-top:12px;"
-        >
-          The dashboard is connected.
-          Waiting for readable KR data
-          from Google Sheets.
-        </div>
-
-      </div>
+    return `
+      <span class="gap-neutral">
+        Target comparison unavailable
+      </span>
     `;
 
-    return;
   }
 
-  latestRows.forEach((row) => {
-    const percentage = ratio(row);
-
-    const isGood =
-      percentage !== null &&
-      percentage >= 1;
-
-    const progressWidth =
-      percentage === null
-        ? 0
-        : Math.min(
-            Math.max(
-              percentage * 100,
-              0
-            ),
-            100
-          );
-
-    const actual =
-      row.actualRaw !== undefined &&
-      row.actualRaw !== ""
-        ? row.actualRaw
-        : row.actual;
-
-    const target =
-      row.targetRaw !== undefined &&
-      row.targetRaw !== ""
-        ? row.targetRaw
-        : row.target;
-
-    const card =
-      document.createElement("div");
-
-    card.className =
-      `metric-card ${
-        isGood ? "good" : "bad"
-      }`;
-
-    card.innerHTML = `
-      <div class="metric-top">
-
-        <div>
-
-          <div class="metric-name">
-            ${escapeHtml(row.metric)}
-          </div>
-
-          <div class="metric-owner">
-            ${escapeHtml(
-              row.stakeholder ||
-                "Team"
-            )}
-          </div>
-
-        </div>
-
-        <div
-          class="status ${
-            isGood
-              ? "good"
-              : "bad"
-          }"
-        >
-          ${
-            isGood
-              ? "ON TRACK"
-              : "AT RISK"
-          }
-        </div>
-
-      </div>
-
-      <div class="metric-value">
-
-        <span class="actual">
-          ${escapeHtml(
-            String(actual)
-          )}
-          ${row.unit || ""}
-        </span>
-
-        <span class="target">
-          /
-          ${escapeHtml(
-            String(target)
-          )}
-          ${row.unit || ""}
-        </span>
-
-      </div>
-
-      <div class="bar">
-
-        <div
-          class="bar-fill"
-          style="width:${progressWidth}%"
-        ></div>
-
-      </div>
-
-      <div class="meta-row">
-
-        <span>
-          ${
-            percentage === null
-              ? "No comparison"
-              : `${Math.round(
-                  percentage * 100
-                )}% of target`
-          }
-        </span>
-
-        <span>
-          ${
-            row.month
-              ? escapeHtml(
-                  row.month
-                )
-              : "Latest"
-          }
-        </span>
-
-      </div>
-    `;
-
-    container.appendChild(card);
-  });
-}
-
-/* =========================================================
-   METRIC SELECT
-========================================================= */
-
-const metricSelect =
-  $("#metricSelect");
-
-if (metricSelect) {
-  metricSelect.addEventListener(
-    "change",
-    (event) => {
-      selectedMetric =
-        event.target.value;
-
-      renderTrend();
-    }
-  );
-}
-
-function renderTrendOptions(latestRows) {
-  const select =
-    $("#metricSelect");
-
-  if (!select) {
-    return;
-  }
-
-  const metrics = [
-    ...new Set(
-      latestRows
-        .map((row) => row.metric)
-        .filter(Boolean)
-    ),
-  ];
-
-  if (!metrics.includes(selectedMetric)) {
-    selectedMetric =
-      metrics[0] || "";
-  }
-
-  select.innerHTML =
-    metrics.length > 0
-      ? metrics
-          .map(
-            (metric) =>
-              `
-              <option value="${escapeAttr(
-                metric
-              )}">
-                ${escapeHtml(
-                  metric
-                )}
-              </option>
-              `
-          )
-          .join("")
-      : `<option>No metric data</option>`;
-
-  if (selectedMetric) {
-    select.value = selectedMetric;
-  }
-}
-
-/* =========================================================
-   TREND DATA
-========================================================= */
-
-function trendData() {
-  let sourceRows = rows;
-
-  if (selectedProgram !== "All") {
-    sourceRows = rows.filter(
-      (row) =>
-        String(row.program || "")
-          .toLowerCase() ===
-        selectedProgram.toLowerCase()
-    );
-  }
-
-  const matchingRows =
-    sourceRows.filter(
-      (row) =>
-        row.metric ===
-          selectedMetric &&
-        row.actual !== null &&
-        row.actual !== undefined
-    );
-
-  const byMonth = new Map();
-
-  matchingRows.forEach((row) => {
-    const month =
-      row.month || "Current";
-
-    if (!byMonth.has(month)) {
-      byMonth.set(month, row);
-    }
-  });
-
-  return [...byMonth.entries()].map(
-    ([label, row]) => ({
-      label,
-      value: row.actual,
-      target: row.target,
-    })
-  );
-}
-
-/* =========================================================
-   TREND CHART
-========================================================= */
-
-function renderTrend() {
-  const svg = $("#chart");
-  const labels = $("#chartLabels");
-
-  if (!svg) {
-    return;
-  }
-
-  const data = trendData();
-
-  if (!data.length) {
-    svg.innerHTML = `
-      <text
-        x="50%"
-        y="50%"
-        text-anchor="middle"
-        fill="#5d6a79"
-        font-size="14"
-      >
-        No monthly data available
-      </text>
-    `;
-
-    if (labels) {
-      labels.innerHTML = "";
-    }
-
-    return;
-  }
-
-  const width = 1000;
-  const height = 360;
-
-  const left = 28;
-  const right = 20;
-  const top = 28;
-  const bottom = 36;
-
-  const values = data
-    .map((item) =>
-      Number(item.value)
-    )
-    .filter(
-      (value) =>
-        !Number.isNaN(value)
-    );
+  const actual =
+    Number(metric.actual);
 
   const target =
-    data.find(
-      (item) =>
-        item.target !== null &&
-        item.target !== undefined
-    )?.target;
+    Number(metric.target);
 
-  const allValues =
-    target !== undefined
-      ? [...values, Number(target)]
-      : values;
+  if (
+    metric.lowerBetter
+  ) {
 
-  let min =
-    Math.min(...allValues);
+    const gap =
+      actual -
+      target;
 
-  let max =
-    Math.max(...allValues);
+    if (
+      gap <= 0
+    ) {
 
-  if (min === max) {
-    min -= 1;
-    max += 1;
+      return `
+        <span class="gap-good">
+          ${formatNumber(
+            Math.abs(gap)
+          )} pp below limit
+        </span>
+      `;
+
+    }
+
+    return `
+      <span class="gap-bad">
+        ${formatNumber(
+          gap
+        )} pp above limit
+      </span>
+    `;
+
   }
 
-  const x = (index) =>
-    left +
-    (width - left - right) *
+  const gap =
+    actual -
+    target;
+
+  if (
+    gap >= 0
+  ) {
+
+    return `
+      <span class="gap-good">
+        +${formatNumber(
+          gap
+        )} above target
+      </span>
+    `;
+
+  }
+
+  return `
+    <span class="gap-bad">
+      ${formatNumber(
+        Math.abs(gap)
+      )} below target
+    </span>
+  `;
+
+}
+
+/* =========================================================
+   PROGRESS
+========================================================= */
+
+function renderProgress(
+  metric
+) {
+
+  if (
+    metric.actual ===
+      null ||
+    metric.actual ===
+      undefined ||
+    metric.target ===
+      null ||
+    metric.target ===
+      undefined
+  ) {
+
+    return `
+      <div class="progress-track">
+        <div
+          class="progress-fill neutral"
+          style="width:0%"
+        ></div>
+      </div>
+    `;
+
+  }
+
+  const actual =
+    Number(metric.actual);
+
+  const target =
+    Number(metric.target);
+
+  let percentage;
+
+  if (
+    metric.lowerBetter
+  ) {
+
+    percentage =
+      actual <= 0
+        ? 100
+        : (
+            target /
+            actual
+          ) *
+          100;
+
+  } else {
+
+    percentage =
       (
-        index /
-        Math.max(
-          1,
-          data.length - 1
-        )
+        actual /
+        target
+      ) *
+      100;
+
+  }
+
+  percentage =
+    Math.max(
+      0,
+      Math.min(
+        percentage,
+        100
+      )
+    );
+
+  const status =
+    getMetricStatus(
+      metric
+    );
+
+  return `
+    <div class="progress-track">
+
+      <div
+        class="progress-fill ${
+          status.onTrack
+            ? "good"
+            : "bad"
+        }"
+        style="width:${percentage}%"
+      ></div>
+
+    </div>
+  `;
+
+}
+
+/* =========================================================
+   SPARKLINE
+========================================================= */
+
+function renderSparkline(
+  metric
+) {
+
+  const monthly =
+    (metric.monthly ||
+      []).filter(
+        (item) =>
+          item.actual !==
+            null &&
+          item.actual !==
+            undefined
       );
 
-  const y = (value) =>
-    top +
-    (height - top - bottom) *
-      (
-        1 -
-        (value - min) /
-          (max - min)
+  /*
+   * Numeric trend.
+   */
+
+  if (
+    monthly.length >= 2
+  ) {
+
+    const values =
+      monthly.map(
+        (item) =>
+          Number(
+            item.actual
+          )
       );
 
-  let path = "";
+    const width = 560;
+    const height = 130;
 
-  data.forEach(
-    (item, index) => {
-      path +=
-        index === 0
-          ? "M "
-          : " L ";
+    const padding = 12;
 
-      path +=
-        `${x(index).toFixed(1)} ` +
-        `${y(
-          Number(item.value)
-        ).toFixed(1)}`;
+    let min =
+      Math.min(
+        ...values
+      );
+
+    let max =
+      Math.max(
+        ...values
+      );
+
+    if (
+      min === max
+    ) {
+
+      min -= 1;
+      max += 1;
+
     }
-  );
 
-  const points = data
-    .map(
-      (item, index) => `
-        <circle
-          cx="${x(index)}"
-          cy="${y(
-            Number(item.value)
-          )}"
-          r="4.5"
-          fill="#0b1017"
-          stroke="#a89cff"
-          stroke-width="3"
+    const x =
+      (index) =>
+        padding +
+        (
+          width -
+          padding * 2
+        ) *
+          (
+            index /
+            Math.max(
+              1,
+              values.length -
+                1
+            )
+          );
+
+    const y =
+      (value) =>
+        height -
+        padding -
+        (
+          height -
+          padding * 2
+        ) *
+          (
+            (
+              value -
+              min
+            ) /
+            (
+              max -
+              min
+            )
+          );
+
+    let path = "";
+
+    values.forEach(
+      (
+        value,
+        index
+      ) => {
+
+        path +=
+          index === 0
+            ? "M "
+            : " L ";
+
+        path +=
+          `${x(index).toFixed(
+            1
+          )} ` +
+          `${y(
+            value
+          ).toFixed(1)}`;
+
+      }
+    );
+
+    const dots =
+      values
+        .map(
+          (
+            value,
+            index
+          ) =>
+            `
+            <circle
+              cx="${x(
+                index
+              )}"
+              cy="${y(
+                value
+              )}"
+              r="3.5"
+              class="spark-dot"
+            />
+          `
+        )
+        .join("");
+
+    return `
+      <svg
+        class="sparkline"
+        viewBox="0 0 ${width} ${height}"
+        preserveAspectRatio="none"
+      >
+
+        <line
+          x1="12"
+          x2="${width -
+            12}"
+          y1="${height -
+            20}"
+          y2="${height -
+            20}"
+          class="spark-axis"
         />
-      `
+
+        <path
+          d="${path}"
+          class="spark-path"
+        />
+
+        ${dots}
+
+      </svg>
+    `;
+
+  }
+
+  /*
+   * Text / non-numeric timeline.
+   */
+
+  return `
+    <div class="text-trend">
+
+      ${
+        (
+          metric.monthly ||
+          []
+        )
+          .map(
+            (item) => {
+
+              const value =
+                item.actualRaw ||
+                "—";
+
+              return `
+                <div
+                  class="text-trend-item"
+                >
+                  <span>
+                    ${escapeHtml(
+                      item.month
+                    )}
+                  </span>
+
+                  <strong>
+                    ${escapeHtml(
+                      value
+                    )}
+                  </strong>
+                </div>
+              `;
+
+            }
+          )
+          .join("")
+      }
+
+    </div>
+  `;
+
+}
+
+/* =========================================================
+   MONTH VALUES
+========================================================= */
+
+function renderMonthValues(
+  metric
+) {
+
+  const monthly =
+    metric.monthly ||
+    [];
+
+  return monthly
+    .map(
+      (item) =>
+        `
+        <div class="month-value">
+
+          <span class="month-name">
+            ${escapeHtml(
+              item.month
+            )}
+          </span>
+
+          <span class="month-number">
+            ${
+              item.actual !==
+                null &&
+              item.actual !==
+                undefined
+                ? escapeHtml(
+                    formatValue(
+                      item.actual,
+                      item.actualRaw,
+                      metric
+                    )
+                  )
+                : "—"
+            }
+          </span>
+
+        </div>
+        `
     )
     .join("");
 
-  let targetLine = "";
-
-  if (
-    target !== undefined &&
-    target !== null
-  ) {
-    const targetY =
-      y(Number(target));
-
-    targetLine = `
-      <line
-        x1="${left}"
-        x2="${width - right}"
-        y1="${targetY}"
-        y2="${targetY}"
-        stroke="#607080"
-        stroke-dasharray="5 7"
-      />
-
-      <text
-        x="${width - right}"
-        y="${targetY - 8}"
-        text-anchor="end"
-        fill="#708090"
-        font-size="11"
-      >
-        Target ${escapeHtml(
-          String(target)
-        )}
-      </text>
-    `;
-  }
-
-  svg.innerHTML = `
-    <line
-      x1="${left}"
-      x2="${width - right}"
-      y1="${top}"
-      y2="${top}"
-      stroke="#18212c"
-    />
-
-    <line
-      x1="${left}"
-      x2="${width - right}"
-      y1="${height / 2}"
-      y2="${height / 2}"
-      stroke="#18212c"
-    />
-
-    <line
-      x1="${left}"
-      x2="${width - right}"
-      y1="${height - bottom}"
-      y2="${height - bottom}"
-      stroke="#18212c"
-    />
-
-    ${targetLine}
-
-    <path
-      d="${path}"
-      fill="none"
-      stroke="#a89cff"
-      stroke-width="4"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    />
-
-    ${points}
-  `;
-
-  if (labels) {
-    labels.innerHTML =
-      data
-        .map(
-          (item) =>
-            `<span>
-              ${escapeHtml(
-                String(
-                  item.label
-                ).slice(0, 12)
-              )}
-            </span>`
-        )
-        .join("");
-  }
 }
 
 /* =========================================================
-   ESCAPE HTML
+   DESCRIPTION
 ========================================================= */
 
-function escapeHtml(value) {
-  return String(value).replace(
-    /[&<>"']/g,
-    (character) => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;",
-    })[character]
-  );
+function getMetricDescriptor(
+  metric
+) {
+
+  if (
+    metric.metric
+      .toLowerCase()
+      .includes("nps")
+  ) {
+
+    return "Customer advocacy score";
+
+  }
+
+  if (
+    metric.metric
+      .toLowerCase()
+      .includes("fixed pay")
+  ) {
+
+    return "Fixed-pay placement outcome";
+
+  }
+
+  if (
+    metric.metric
+      .toLowerCase()
+      .includes(
+        "uncertain pay"
+      )
+  ) {
+
+    return "Uncertain-pay placement outcome";
+
+  }
+
+  if (
+    metric.metric
+      .toLowerCase()
+      .includes("i2h")
+  ) {
+
+    return "Interview-to-hire ratio · lower is better";
+
+  }
+
+  if (
+    metric.metric
+      .toLowerCase()
+      .includes(
+        "aspirational"
+      )
+  ) {
+
+    return "Aspirational placement outcome";
+
+  }
+
+  if (
+    metric.metric
+      .toLowerCase()
+      .includes(
+        "scaler 3.0"
+      )
+  ) {
+
+    return "Program experience target";
+
+  }
+
+  return "Key result";
+
 }
 
-function escapeAttr(value) {
-  return escapeHtml(value).replace(
-    /`/g,
-    "&#96;"
+/* =========================================================
+   FORMAT VALUE
+========================================================= */
+
+function formatValue(
+  numericValue,
+  rawValue,
+  metric
+) {
+
+  if (
+    numericValue ===
+      null ||
+    numericValue ===
+      undefined
+  ) {
+
+    return (
+      rawValue ||
+      "—"
+    );
+
+  }
+
+  const number =
+    formatNumber(
+      numericValue
+    );
+
+  if (
+    metric.metric
+      .toLowerCase()
+      .includes(
+        "i2h"
+      )
+  ) {
+
+    return `${number}%`;
+
+  }
+
+  return number;
+
+}
+
+/* =========================================================
+   NUMBER FORMAT
+========================================================= */
+
+function formatNumber(
+  value
+) {
+
+  if (
+    value ===
+      null ||
+    value ===
+      undefined ||
+    Number.isNaN(
+      Number(value)
+    )
+  ) {
+
+    return "—";
+
+  }
+
+  const number =
+    Number(value);
+
+  if (
+    Number.isInteger(
+      number
+    )
+  ) {
+
+    return String(
+      number
+    );
+
+  }
+
+  return number
+    .toFixed(2)
+    .replace(
+      /\.?0+$/,
+      ""
+    );
+
+}
+
+/* =========================================================
+   SYSTEM MESSAGE
+========================================================= */
+
+function showSystemMessage(
+  message
+) {
+
+  const element =
+    $("#systemMessage");
+
+  if (!element) {
+    return;
+  }
+
+  element.classList.remove(
+    "hidden"
   );
+
+  element.textContent =
+    message;
+
+}
+
+function hideSystemMessage() {
+
+  const element =
+    $("#systemMessage");
+
+  if (!element) {
+    return;
+  }
+
+  element.classList.add(
+    "hidden"
+  );
+
+}
+
+/* =========================================================
+   ESCAPING
+========================================================= */
+
+function escapeHtml(
+  value
+) {
+
+  return String(
+    value
+  ).replace(
+    /[&<>"']/g,
+    (character) => ({
+      "&":
+        "&amp;",
+      "<":
+        "&lt;",
+      ">":
+        "&gt;",
+      '"':
+        "&quot;",
+      "'":
+        "&#39;",
+    })[
+      character
+    ]
+  );
+
 }
 
 /* =========================================================
@@ -1027,13 +1715,26 @@ function escapeAttr(value) {
 
 setInterval(
   async () => {
-    await loadMetrics();
+
+    try {
+
+      await loadMetrics();
+
+    } catch (error) {
+
+      console.error(
+        "Auto refresh failed:",
+        error
+      );
+
+    }
+
   },
   5 * 60 * 1000
 );
 
 /* =========================================================
-   START APP
+   START
 ========================================================= */
 
 boot();
