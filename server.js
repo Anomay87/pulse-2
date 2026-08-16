@@ -17,6 +17,10 @@ const SESSION_SECRET =
 
 const REFRESH_MS = 5 * 60 * 1000;
 
+/* =========================================================
+   BASIC APP SETUP
+========================================================= */
+
 app.use(express.json({ limit: "100kb" }));
 
 app.use(
@@ -33,31 +37,21 @@ app.use(
   })
 );
 
-/*
-|--------------------------------------------------------------------------
-| STATIC FILES
-|--------------------------------------------------------------------------
-*/
-
 app.use(express.static(path.join(__dirname, "public")));
 
-/*
-|--------------------------------------------------------------------------
-| CACHE
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   CACHE
+========================================================= */
 
 let cache = {
-  metrics: null,
-  access: null,
+  metrics: [],
+  access: [],
   fetchedAt: 0,
 };
 
-/*
-|--------------------------------------------------------------------------
-| HELPERS
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   HELPERS
+========================================================= */
 
 function cleanKey(value) {
   return String(value ?? "")
@@ -96,11 +90,6 @@ function num(value) {
     .replace(/₹/g, "")
     .trim();
 
-  /*
-   * Handle ranges such as:
-   * 4.7-4.8
-   * 80-90
-   */
   const range = text.match(
     /(-?\d+(?:\.\d+)?)\s*(?:-|to|–|—)\s*(-?\d+(?:\.\d+)?)/i
   );
@@ -156,11 +145,9 @@ function findColumn(headers, patterns) {
   return null;
 }
 
-/*
-|--------------------------------------------------------------------------
-| KR DATA NORMALIZATION
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   KR DATA - LONG FORMAT
+========================================================= */
 
 function inferLongRows(rows) {
   if (!rows.length) {
@@ -196,8 +183,8 @@ function inferLongRows(rows) {
 
   const targetCol = findColumn(headers, [
     "target",
-    "goal",
     "target_value",
+    "goal",
   ]);
 
   const actualCol = findColumn(headers, [
@@ -234,15 +221,25 @@ function inferLongRows(rows) {
           : "Team"
       ),
 
-      metric: normText(row[metricCol]),
+      metric: normText(
+        row[metricCol]
+      ),
 
-      target: num(row[targetCol]),
+      target: num(
+        row[targetCol]
+      ),
 
-      actual: num(row[actualCol]),
+      actual: num(
+        row[actualCol]
+      ),
 
-      targetRaw: normText(row[targetCol]),
+      targetRaw: normText(
+        row[targetCol]
+      ),
 
-      actualRaw: normText(row[actualCol]),
+      actualRaw: normText(
+        row[actualCol]
+      ),
 
       month: normText(
         monthCol
@@ -262,8 +259,14 @@ function inferLongRows(rows) {
           ? "%"
           : "",
     }))
-    .filter((row) => row.metric);
+    .filter(
+      (row) => row.metric
+    );
 }
+
+/* =========================================================
+   KR DATA - WIDE FORMAT
+========================================================= */
 
 function inferWideRows(rows) {
   if (!rows.length) {
@@ -300,9 +303,7 @@ function inferWideRows(rows) {
   for (const header of headers) {
     const key = cleanKey(header);
 
-    if (
-      /target|goal/.test(key)
-    ) {
+    if (/target|goal/.test(key)) {
       const base = key.replace(
         /_?target|_?goal/g,
         ""
@@ -353,10 +354,11 @@ function inferWideRows(rows) {
       }
 
       const metricName =
-        pair.metric
-          .replace(/\b\w/g, (char) =>
+        pair.metric.replace(
+          /\b\w/g,
+          (char) =>
             char.toUpperCase()
-          );
+        );
 
       output.push({
         id: `${index}-${metricName}`,
@@ -411,6 +413,10 @@ function inferWideRows(rows) {
   return output;
 }
 
+/* =========================================================
+   GOOGLE SHEET KR NORMALIZATION
+========================================================= */
+
 function normalizeMetrics(csvText) {
   const rows = parse(csvText, {
     columns: true,
@@ -420,7 +426,8 @@ function normalizeMetrics(csvText) {
     trim: true,
   });
 
-  const longRows = inferLongRows(rows);
+  const longRows =
+    inferLongRows(rows);
 
   if (longRows !== null) {
     return longRows;
@@ -429,11 +436,9 @@ function normalizeMetrics(csvText) {
   return inferWideRows(rows);
 }
 
-/*
-|--------------------------------------------------------------------------
-| ACCESS DATA
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   ACCESS DATA
+========================================================= */
 
 function normalizeAccess(csvText) {
   const rows = parse(csvText, {
@@ -448,7 +453,8 @@ function normalizeAccess(csvText) {
     return [];
   }
 
-  const headers = headersFromRows(rows);
+  const headers =
+    headersFromRows(rows);
 
   const userCol = findColumn(headers, [
     "username",
@@ -486,7 +492,9 @@ function normalizeAccess(csvText) {
       ),
 
       program: programCol
-        ? normText(row[programCol])
+        ? normText(
+            row[programCol]
+          )
         : "All",
     }))
     .filter(
@@ -496,11 +504,9 @@ function normalizeAccess(csvText) {
     );
 }
 
-/*
-|--------------------------------------------------------------------------
-| GOOGLE SHEETS FETCH
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   FETCH GOOGLE CSV
+========================================================= */
 
 async function fetchText(url) {
   if (!url) {
@@ -522,9 +528,14 @@ async function fetchText(url) {
   return response.text();
 }
 
+/* =========================================================
+   LOAD DATA
+========================================================= */
+
 async function getData(force = false) {
   const cacheIsFresh =
     cache.metrics &&
+    cache.fetchedAt &&
     Date.now() - cache.fetchedAt <
       REFRESH_MS;
 
@@ -532,15 +543,34 @@ async function getData(force = false) {
     return cache;
   }
 
-  /*
-   * KR data is mandatory.
-   * Access data is optional because the primary
-   * founder login is controlled through
-   * DASHBOARD_PASSWORD.
-   */
-  const krCsv = await fetchText(
-    KR_CSV_URL
-  );
+  let metrics = [];
+
+  try {
+    const krCsv =
+      await fetchText(
+        KR_CSV_URL
+      );
+
+    metrics =
+      normalizeMetrics(
+        krCsv
+      );
+  } catch (error) {
+    console.error(
+      "KR CSV error:",
+      error.message
+    );
+
+    /*
+     * IMPORTANT:
+     * We don't crash the dashboard if
+     * Google Sheet parsing fails.
+     *
+     * The dashboard can still open and
+     * tell us that data could not load.
+     */
+    metrics = [];
+  }
 
   let access = [];
 
@@ -552,17 +582,16 @@ async function getData(force = false) {
         );
 
       access =
-        normalizeAccess(accessCsv);
+        normalizeAccess(
+          accessCsv
+        );
     } catch (error) {
       console.warn(
-        "Access CSV could not be loaded:",
+        "Access CSV error:",
         error.message
       );
     }
   }
-
-  const metrics =
-    normalizeMetrics(krCsv);
 
   cache = {
     metrics,
@@ -573,25 +602,9 @@ async function getData(force = false) {
   return cache;
 }
 
-/*
-|--------------------------------------------------------------------------
-| AUTHENTICATION
-|--------------------------------------------------------------------------
-*/
-
-function requireAuth(
-  req,
-  res,
-  next
-) {
-  if (!req.session.user) {
-    return res.status(401).json({
-      error: "Unauthorized",
-    });
-  }
-
-  next();
-}
+/* =========================================================
+   LOGIN
+========================================================= */
 
 app.post(
   "/api/login",
@@ -612,17 +625,19 @@ app.post(
         });
       }
 
-      /*
-       * Founder demo credentials.
-       *
-       * Username is always:
-       * founder
-       *
-       * Password is controlled through:
-       * DASHBOARD_PASSWORD
-       */
       const validUsername =
         "founder";
+
+      /*
+       * TODAY'S FOUNDER LOGIN
+       *
+       * Username:
+       * founder
+       *
+       * Password:
+       * value stored in Railway
+       * DASHBOARD_PASSWORD
+       */
 
       if (
         String(username)
@@ -641,7 +656,7 @@ app.post(
       ) {
         return res.status(500).json({
           error:
-            "DASHBOARD_PASSWORD is not configured in Railway.",
+            "DASHBOARD_PASSWORD is missing in Railway Variables.",
         });
       }
 
@@ -658,11 +673,12 @@ app.post(
       }
 
       /*
-       * Make sure KR data is readable
-       * before allowing access.
+       * IMPORTANT:
+       * Do NOT fetch Google Sheets here.
+       *
+       * Login should succeed independently
+       * from Google Sheet parsing.
        */
-      const data =
-        await getData(true);
 
       req.session.user = {
         username: "founder",
@@ -676,7 +692,7 @@ app.post(
           req.session.user,
 
         fetchedAt:
-          data.fetchedAt,
+          cache.fetchedAt || null,
       });
     } catch (error) {
       console.error(
@@ -686,34 +702,32 @@ app.post(
 
       return res.status(500).json({
         error:
-          "Login failed. Check the Google Sheet connection.",
+          "Login failed.",
       });
     }
   }
 );
 
-/*
-|--------------------------------------------------------------------------
-| LOGOUT
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   LOGOUT
+========================================================= */
 
 app.post(
   "/api/logout",
   (req, res) => {
-    req.session.destroy(() => {
-      res.json({
-        ok: true,
-      });
-    });
+    req.session.destroy(
+      () => {
+        res.json({
+          ok: true,
+        });
+      }
+    );
   }
 );
 
-/*
-|--------------------------------------------------------------------------
-| CURRENT USER
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   CURRENT USER
+========================================================= */
 
 app.get(
   "/api/me",
@@ -726,23 +740,26 @@ app.get(
   }
 );
 
-/*
-|--------------------------------------------------------------------------
-| KR METRICS
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   KR METRICS
+========================================================= */
 
 app.get(
   "/api/metrics",
   requireAuth,
   async (req, res) => {
     try {
+      /*
+       * Fetch fresh Google Sheet data
+       * whenever cache is older than 5 minutes.
+       */
+
       const data =
         await getData(false);
 
       return res.json({
         rows:
-          data.metrics,
+          data.metrics || [],
 
         fetchedAt:
           data.fetchedAt,
@@ -755,13 +772,13 @@ app.get(
       });
     } catch (error) {
       console.error(
-        "Metrics error:",
+        "Metrics endpoint error:",
         error
       );
 
       return res.status(500).json({
         error:
-          "Could not fetch Google Sheet data.",
+          "Could not fetch metrics.",
 
         details:
           error.message,
@@ -770,11 +787,9 @@ app.get(
   }
 );
 
-/*
-|--------------------------------------------------------------------------
-| MANUAL REFRESH
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   MANUAL REFRESH
+========================================================= */
 
 app.post(
   "/api/refresh",
@@ -794,6 +809,11 @@ app.post(
           data.fetchedAt,
       });
     } catch (error) {
+      console.error(
+        "Refresh error:",
+        error
+      );
+
       return res.status(500).json({
         error:
           error.message,
@@ -802,11 +822,9 @@ app.post(
   }
 );
 
-/*
-|--------------------------------------------------------------------------
-| HEALTH CHECK
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   HEALTH CHECK
+========================================================= */
 
 app.get(
   "/health",
@@ -823,11 +841,9 @@ app.get(
   }
 );
 
-/*
-|--------------------------------------------------------------------------
-| START SERVER
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   START
+========================================================= */
 
 app.listen(
   PORT,
@@ -838,15 +854,21 @@ app.listen(
     );
 
     console.log(
-      `KR CSV configured: ${Boolean(KR_CSV_URL)}`
+      `KR CSV configured: ${Boolean(
+        KR_CSV_URL
+      )}`
     );
 
     console.log(
-      `Access CSV configured: ${Boolean(ACCESS_CSV_URL)}`
+      `Access CSV configured: ${Boolean(
+        ACCESS_CSV_URL
+      )}`
     );
 
     console.log(
-      `Dashboard password configured: ${Boolean(DASHBOARD_PASSWORD)}`
+      `Dashboard password configured: ${Boolean(
+        DASHBOARD_PASSWORD
+      )}`
     );
   }
 );
